@@ -32,34 +32,44 @@ entry; Fibo extension luôn độc lập với entry và chỉ dùng cho TP.
 pip install -r requirements.txt
 ```
 
-## Signal Center — toàn bộ OKX LONG/SHORT
+## Night Watch — scanner + paper trading toàn bộ OKX
 
-Một màn hình quét toàn bộ perpetual USDT crypto active trên OKX. Sản phẩm
-stock/commodity tokenized bị loại bằng `instCategory`, nên universe chỉ gồm
-coin có thể LONG và SHORT. Số lượng được lấy động khi mở ứng dụng.
+Monitor quét toàn bộ perpetual USDT crypto active trên OKX sau mỗi lần nến
+M15 đóng. Sản phẩm stock/commodity tokenized bị loại bằng `instCategory`, nên
+universe chỉ gồm coin có thể LONG và SHORT. Monitor chạy độc lập với trình
+duyệt và ghi scan, vị thế paper cùng mọi sự kiện vào SQLite.
 
 ```bash
+python paper_monitor.py
 streamlit run dashboard/signal_app.py
 ```
 
-Mở `http://localhost:8501`. Bảng chỉ phát tín hiệu khi nến M15 đã đóng.
+Mở `http://localhost:8501`. Muốn thử đúng một lượt rồi thoát:
+
+```bash
+python paper_monitor.py --once
+```
 
 - LONG: EMA34 > EMA89, breakout, Dow HH/HL, hồi Value Zone, bullish PA.
 - SHORT: EMA34 < EMA89, breakdown, Dow LL/LH, hồi Value Zone, bearish PA.
 
-Mỗi tín hiệu READY hiển thị Entry, SL, TP1 Fibo 1.618, TP2 Fibo 2.618,
-trailing EMA34 H1, số hợp đồng, notional và risk ước tính. Ứng dụng không giữ
-API key và **không tự đặt lệnh**.
+Paper engine mở tại giá đóng nến xác nhận, TP1 chốt 50%, TP2 chốt 30% và giữ
+20% runner theo EMA34 H1. Dashboard có funnel 5 gate, snapshot scanner, vị thế,
+MFE/MAE, lịch sử sự kiện và equity mô hình. Nếu SL/TP cùng chạm trong một nến,
+engine ưu tiên SL. Đây là OHLCV paper model, chưa tính funding/slippage/fill.
+Ứng dụng không giữ API key và **không gửi lệnh thật**.
 
 Đóng gói Docker:
 
 ```bash
 docker compose up --build -d
 docker compose logs -f signal-center
+docker compose logs -f paper-monitor
 ```
 
-Cache thị trường được giữ tại `data/cache/`. Không mở cổng 8501 ra Internet
-công khai nếu chưa đặt ứng dụng sau lớp xác thực/reverse proxy.
+Cache thị trường được giữ tại `data/cache/`, SQLite và log tại `results/`.
+Không mở cổng 8501 ra Internet công khai nếu chưa đặt ứng dụng sau lớp
+xác thực/reverse proxy.
 
 ## Sử dụng
 
@@ -111,6 +121,7 @@ core/
   indicators.py   EMA, ATR, ADX, ZigZag (có độ trễ đúng), Fibonacci, Price Action
   mtf.py          Multi-timeframe alignment — CHỐNG LOOK-AHEAD
   pure_sonic.py   Bản thuần: trend, breakout, Value Zone, PA
+  signal_scanner.py Scanner OKX dùng chung cho monitor và dashboard
   trade_setup.py  Setup triển khai: Pure Sonic + Dow, chỉ dùng nến đã đóng
   signals.py      3 tầng lọc, mỗi filter bật/tắt độc lập
 backtest/
@@ -123,7 +134,8 @@ data/
   loader.py       CoinGecko market cap + ccxt Binance/OKX, cache parquet
 dashboard/
   app.py          Streamlit + Plotly
-  signal_app.py   Signal Center toàn OKX, LONG/SHORT với Entry/SL/TP
+  signal_app.py   Night Watch: scanner, paper positions, events và equity
+paper_monitor.py  Scheduler M15 + SQLite paper engine, không gửi lệnh thật
 sonic_r_elliott.pine   Indicator TradingView
 ```
 
@@ -334,6 +346,6 @@ Snapshot universe: `AAVE`, `ADA`, `AERO`, `AVAX`, `BANK`, `BNB`, `BTC`, `DEXE`,
 ## Bước tiếp theo
 
 - [ ] Đối chiếu tín hiệu Pine Script vs Python
-- [ ] Thêm SELL setup (hiện chỉ có BUY)
-- [ ] Paper trading 2–3 tháng không dùng tiền thật, ghi nhật ký và đối chiếu
-      với trade log backtest cùng kỳ
+- [x] Thêm SELL setup và scanner toàn bộ OKX
+- [x] Bắt đầu paper trading không dùng tiền thật, ghi SQLite qua đêm
+- [ ] Thu thập paper log 2–3 tháng và đối chiếu với backtest cùng kỳ

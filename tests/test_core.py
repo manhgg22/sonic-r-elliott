@@ -30,6 +30,7 @@ from core.trade_setup import (
     closed_bars,
     latest_trade_setup,
 )
+from paper_monitor import advance_paper_trade, seconds_to_next_close
 from backtest.diagnostics import ablation_variants, funnel
 from backtest.engine import Costs, run_backtest
 from backtest.metrics import basic_metrics, frequency_check, wilson_edge_interval
@@ -282,6 +283,72 @@ def test_deploy_setup_has_five_gates_and_closed_bars():
     assert short["status"] == "READY"
     assert short["tp2"] < short["tp1"] < short["entry"] < short["sl"]
     print("  [OK] Setup LONG/SHORT có đúng 5 gate và chỉ dùng nến đã đóng")
+
+
+def test_paper_trade_lifecycle_is_conservative():
+    trade = {
+        "id": 1, "side": "LONG", "status": "OPEN", "entry": 100.0,
+        "risk": 10.0, "current_sl": 90.0, "tp1": 115.0, "tp2": 130.0,
+        "tp1_rr": 1.5, "tp2_rr": 3.0, "trail_h1": 95.0,
+        "remaining": 1.0, "realized_r": 0.0, "tp1_hit": 0, "tp2_hit": 0,
+        "mfe_r": 0.0, "mae_r": 0.0, "exit_price": None,
+        "exit_reason": None, "total_r": None,
+    }
+    tp1, events = advance_paper_trade(
+        trade,
+        {
+            "bar_high": 116.0, "bar_low": 101.0, "bar_close": 110.0,
+            "trail_h1": 95.0, "signal_time": pd.Timestamp("2026-01-01T00:15Z"),
+        },
+    )
+    assert [event[0] for event in events] == ["TP1"]
+    assert tp1["status"] == "OPEN" and tp1["current_sl"] == 100
+    assert np.isclose(tp1["remaining"], 0.5) and np.isclose(tp1["realized_r"], 0.75)
+
+    tp2, events = advance_paper_trade(
+        tp1,
+        {
+            "bar_high": 131.0, "bar_low": 101.0, "bar_close": 125.0,
+            "trail_h1": 95.0, "signal_time": pd.Timestamp("2026-01-01T00:30Z"),
+        },
+    )
+    assert [event[0] for event in events] == ["TP2"]
+    assert np.isclose(tp2["remaining"], 0.2) and np.isclose(tp2["realized_r"], 1.65)
+
+    closed, events = advance_paper_trade(
+        tp2,
+        {
+            "bar_high": 126.0, "bar_low": 101.0, "bar_close": 104.0,
+            "trail_h1": 105.0, "signal_time": pd.Timestamp("2026-01-01T00:45Z"),
+        },
+    )
+    assert closed["status"] == "CLOSED" and events[-1][0] == "TRAIL"
+    assert np.isclose(closed["total_r"], 1.73)
+
+    ambiguous, events = advance_paper_trade(
+        trade,
+        {
+            "bar_high": 116.0, "bar_low": 99.0, "bar_close": 105.0,
+            "trail_h1": 95.0, "signal_time": pd.Timestamp("2026-01-01T00:15Z"),
+        },
+    )
+    assert [event[0] for event in events] == ["TP1", "BE"]
+    assert ambiguous["status"] == "CLOSED" and np.isclose(ambiguous["total_r"], 0.75)
+
+    short = {
+        **trade, "side": "SHORT", "entry": 100.0, "risk": 10.0,
+        "current_sl": 110.0, "tp1": 85.0, "tp2": 70.0,
+    }
+    stopped, events = advance_paper_trade(
+        short,
+        {
+            "bar_high": 111.0, "bar_low": 99.0, "bar_close": 108.0,
+            "trail_h1": 105.0, "signal_time": pd.Timestamp("2026-01-01T00:15Z"),
+        },
+    )
+    assert events[0][0] == "SL" and np.isclose(stopped["total_r"], -1.0)
+    assert seconds_to_next_close(pd.Timestamp("2026-01-01T12:07Z")) == 485
+    print("  [OK] Paper LONG/SHORT chốt 50/30/20 và xử lý nến mơ hồ bảo thủ")
 
 
 def test_adx_range():
@@ -717,6 +784,7 @@ if __name__ == "__main__":
     test_pure_sonic_no_lookahead()
     test_pure_sonic_only_four_conditions()
     test_deploy_setup_has_five_gates_and_closed_bars()
+    test_paper_trade_lifecycle_is_conservative()
 
     print("\n[3] Pipeline đầy đủ")
     sig = test_full_pipeline()
