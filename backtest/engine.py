@@ -92,15 +92,36 @@ def run_backtest(
     remaining_size = 0.0
     partials = []
 
-    highs = m15["high"]
-    lows = m15["low"]
-    closes = m15["close"]
+    high_series = m15["high"]
+    highs = high_series.to_numpy()
+    lows = m15["low"].to_numpy()
+    closes = m15["close"].to_numpy()
+    entries = sig["entry_signal"].to_numpy(dtype=bool)
+    stops = sig["sl"].to_numpy()
+    adx_values = (
+        sig["adx"].to_numpy() if "adx" in sig.columns else np.full(len(sig), np.nan)
+    )
+    retrace_values = (
+        sig["retrace_pct"].to_numpy()
+        if "retrace_pct" in sig.columns
+        else np.full(len(sig), np.nan)
+    )
+    pa_engulfing = sig["pa_engulfing"].to_numpy()
+    pa_pinbar = sig["pa_pinbar"].to_numpy()
+    pa_bos = sig["pa_bos"].to_numpy()
+    trail_values = trail_ema.to_numpy() if trail_ema is not None else None
+    tp1_values = (
+        sig["tp_fib_1618"].to_numpy() if tp_mode == "fib_extension" else None
+    )
+    tp2_values = (
+        sig["tp_fib_2618"].to_numpy() if tp_mode == "fib_extension" else None
+    )
 
     for i in range(len(sig)):
         ts = sig.index[i]
-        bar_high = highs.iloc[i]
-        bar_low = lows.iloc[i]
-        bar_close = closes.iloc[i]
+        bar_high = highs[i]
+        bar_low = lows[i]
+        bar_close = closes[i]
 
         # ---------------- Quản lý lệnh đang mở ----------------
         if open_trade is not None:
@@ -158,8 +179,8 @@ def run_backtest(
                     remaining_size = 0.2 * t.size
 
                 # Runner: trailing theo EMA34_low H1
-                if trail_ema is not None and remaining_size <= 0.2 * t.size:
-                    trail = trail_ema.iloc[i]
+                if trail_values is not None and remaining_size <= 0.2 * t.size:
+                    trail = trail_values[i]
                     if not np.isnan(trail) and bar_close < trail:
                         exit_price = bar_close
                         reason = "TRAIL_EMA"
@@ -198,10 +219,10 @@ def run_backtest(
         if (
             i < len(sig) - 1
             and open_trade is None
-            and bool(sig["entry_signal"].iloc[i])
+            and entries[i]
         ):
             entry = bar_close
-            sl = sig["sl"].iloc[i]
+            sl = stops[i]
 
             if np.isnan(sl) or sl >= entry:
                 continue
@@ -222,12 +243,12 @@ def run_backtest(
                 tp_mode=tp_mode,
                 size=size,
                 risk_amount=risk_amount,
-                adx=sig["adx"].iloc[i] if "adx" in sig.columns else np.nan,
-                retrace_pct=sig["retrace_pct"].iloc[i] if "retrace_pct" in sig.columns else np.nan,
+                adx=adx_values[i],
+                retrace_pct=retrace_values[i],
                 pa_type=(
-                    "engulfing" if sig["pa_engulfing"].iloc[i]
-                    else "pinbar" if sig["pa_pinbar"].iloc[i]
-                    else "bos" if sig["pa_bos"].iloc[i]
+                    "engulfing" if pa_engulfing[i]
+                    else "pinbar" if pa_pinbar[i]
+                    else "bos" if pa_bos[i]
                     else "none"
                 ),
             )
@@ -237,12 +258,12 @@ def run_backtest(
 
             # Thiết lập TP theo chế độ
             if tp_mode == "sr_level":
-                res = find_resistance(highs, i, entry)
+                res = find_resistance(high_series, i, entry)
                 # Nếu không có kháng cự rõ ràng -> dùng 2R
                 t._tp_sr = res if res else entry + 2 * risk_per_unit
             elif tp_mode == "fib_extension":
-                t._tp1 = sig["tp_fib_1618"].iloc[i]
-                t._tp2 = sig["tp_fib_2618"].iloc[i]
+                t._tp1 = tp1_values[i]
+                t._tp2 = tp2_values[i]
                 # Fallback nếu Fibo không hợp lệ
                 if np.isnan(t._tp1) or t._tp1 <= entry:
                     t._tp1 = entry + 1.5 * risk_per_unit

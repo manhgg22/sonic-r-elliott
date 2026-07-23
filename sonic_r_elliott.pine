@@ -30,20 +30,20 @@ tfBase2  = input.timeframe("240", "Nền 2",        group=grpTF)
 tfMain   = input.timeframe("60",  "Sóng chính",   group=grpTF)
 
 grpFilter = "Bộ lọc chống sideway"
-useD1       = input.bool(false, "Dùng nền D1",          group=grpFilter)
-useH4       = input.bool(false, "Dùng nền H4",          group=grpFilter)
+useD1       = input.bool(true,  "Dùng nền D1",          group=grpFilter)
+useH4       = input.bool(true,  "Dùng nền H4",          group=grpFilter)
 useADX      = input.bool(true,  "Dùng ADX",           group=grpFilter)
 adxLen      = input.int(14,     "ADX period",         group=grpFilter)
 adxMin      = input.float(20,   "ADX tối thiểu",      group=grpFilter)
-useSep      = input.bool(false, "Dùng EMA separation", group=grpFilter)
+useSep      = input.bool(true,  "Dùng EMA separation", group=grpFilter)
 sepMin      = input.float(0.5,  "Separation / ATR",   group=grpFilter)
-useDow      = input.bool(false, "Dùng Dow HH+HL",      group=grpFilter)
+useDow      = input.bool(true,  "Dùng Dow HH+HL",      group=grpFilter)
 crossMode   = input.string("State", "Chế độ EMA cross",
                            options=["State", "Event"], group=grpFilter)
 crossBars   = input.int(50,     "Cú cắt hiệu lực (nến H1)", group=grpFilter)
 
 grpElliott = "Elliott / Fibo"
-useFib   = input.bool(false, "Lọc vùng hồi Fibo",  group=grpElliott)
+useFib   = input.bool(true,  "Lọc vùng hồi Fibo",  group=grpElliott)
 fibLo    = input.float(0.30, "Fibo min",           group=grpElliott)
 fibHi    = input.float(0.75, "Fibo max",           group=grpElliott)
 zzLen    = input.int(5,      "ZigZag pivot len",   group=grpElliott)

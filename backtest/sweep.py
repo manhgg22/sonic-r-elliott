@@ -14,11 +14,12 @@ from core.signals import Config, build_signals
 
 
 GRID = {
-    "cross_mode": ["state", "event"],
-    "fib_lo": [0.20, 0.30, 0.382],
-    "fib_hi": [0.618, 0.75, 0.90],
-    "adx_min": [15, 20, 25],
+    "adx_min": [15, 18, 20, 25],
+    "separation_min": [0.2, 0.35, 0.5, 0.7],
+    "fib_lo": [0.20, 0.25, 0.30],
+    "fib_hi": [0.75, 0.85, 0.95],
     "zz_left": [3, 5, 8],
+    "swing_max_age": [100, 200, 400],
 }
 
 
@@ -26,8 +27,22 @@ def _edge_params(params: dict) -> list[str]:
     return [
         name
         for name, values in GRID.items()
-        if name != "cross_mode" and params[name] in (values[0], values[-1])
+        if params[name] in (values[0], values[-1])
     ]
+
+
+def _has_eligible_neighbor(row: pd.Series, eligible: set[tuple]) -> bool:
+    names = list(GRID)
+    values = [row[name] for name in names]
+    for i, name in enumerate(names):
+        position = GRID[name].index(values[i])
+        for adjacent in (position - 1, position + 1):
+            if 0 <= adjacent < len(GRID[name]):
+                neighbor = values.copy()
+                neighbor[i] = GRID[name][adjacent]
+                if tuple(neighbor) in eligible:
+                    return True
+    return False
 
 
 def run_sweep(
@@ -41,50 +56,97 @@ def run_sweep(
     names = list(GRID)
     days = max(int(m15.index.normalize().nunique()), 1)
     rows = []
-    for values in product(*(GRID[name] for name in names)):
-        params = dict(zip(names, values))
-        cfg = Config(
-            **params,
-            use_d1_filter=True,
-            use_h4_filter=True,
-            use_separation_filter=True,
-            use_dow_filter=True,
-            use_fib_filter=True,
-        )
+    structural = product(GRID["zz_left"], GRID["swing_max_age"])
+    thresholds = product(
+        GRID["adx_min"],
+        GRID["separation_min"],
+        GRID["fib_lo"],
+        GRID["fib_hi"],
+    )
+    thresholds = list(thresholds)
+    for zz_left, swing_max_age in structural:
+        cfg = Config(zz_left=zz_left, swing_max_age=swing_max_age)
         sig = build_signals(m15, h1, h4, d1, cfg)
-        trades = run_backtest(
-            sig,
-            m15,
-            symbol="SWEEP",
-            tp_mode=tp_mode,
-            risk_pct=cfg.risk_pct,
-        )
-        metrics = basic_metrics(trades)
-        n_trades = int(metrics["n_trades"])
-        per_day = n_trades / days
-        edge = _edge_params(params)
-        rows.append(
-            {
-                **params,
-                "n_trades": n_trades,
-                "trades_per_day": round(per_day, 3),
-                "winrate": metrics.get("winrate"),
-                "expectancy_r": metrics.get("expectancy_r"),
-                "max_dd": metrics.get("max_drawdown_pct"),
-                "eligible": n_trades >= 100 and 0.3 <= per_day <= 2.0,
-                "is_edge": bool(edge),
-                "edge_params": ",".join(edge),
-            }
-        )
+        static = sig[
+            ["f_d1", "f_h4", "f_cross", "f_dow", "f_value_zone", "f_pa"]
+        ].all(axis=1)
+        engine_columns = [
+            "sl",
+            "adx",
+            "retrace_pct",
+            "pa_engulfing",
+            "pa_pinbar",
+            "pa_bos",
+        ]
+        if tp_mode == "fib_extension":
+            engine_columns += ["tp_fib_1618", "tp_fib_2618"]
 
-    result = pd.DataFrame(rows).sort_values(
-        ["eligible", "is_edge", "expectancy_r"],
-        ascending=[False, True, False],
+        for adx_min, separation_min, fib_lo, fib_hi in thresholds:
+            params = {
+                "adx_min": adx_min,
+                "separation_min": separation_min,
+                "fib_lo": fib_lo,
+                "fib_hi": fib_hi,
+                "zz_left": zz_left,
+                "swing_max_age": swing_max_age,
+            }
+            entry = (
+                static
+                & (sig["adx"] > adx_min)
+                & (sig["separation"] > separation_min)
+                & sig["retrace_pct"].between(fib_lo, fib_hi)
+            )
+            if entry.any():
+                engine_sig = sig[engine_columns].copy()
+                engine_sig["entry_signal"] = entry
+                trades = run_backtest(
+                    engine_sig,
+                    m15,
+                    symbol="SWEEP",
+                    tp_mode=tp_mode,
+                    risk_pct=cfg.risk_pct,
+                )
+            else:
+                trades = pd.DataFrame()
+            metrics = basic_metrics(trades)
+            n_trades = int(metrics["n_trades"])
+            per_day = n_trades / days
+            edge = _edge_params(params)
+            rows.append(
+                {
+                    **params,
+                    "n_trades": n_trades,
+                    "trades_per_day": round(per_day, 3),
+                    "winrate": metrics.get("winrate"),
+                    "expectancy_r": metrics.get("expectancy_r"),
+                    "max_dd": metrics.get("max_drawdown_pct"),
+                    "eligible": n_trades >= 100 and 0.3 <= per_day <= 2.0,
+                    "is_edge_of_grid": bool(edge),
+                    "edge_params": ",".join(edge),
+                }
+            )
+
+    result = pd.DataFrame(rows)
+    eligible = {
+        tuple(row[name] for name in names)
+        for _, row in result[result["eligible"]].iterrows()
+    }
+    result["has_eligible_neighbor"] = result.apply(
+        _has_eligible_neighbor, axis=1, eligible=eligible
+    )
+    result["stable_candidate"] = (
+        result["eligible"]
+        & ~result["is_edge_of_grid"]
+        & result["has_eligible_neighbor"]
+    )
+    result = result.sort_values(
+        ["stable_candidate", "eligible", "is_edge_of_grid", "expectancy_r"],
+        ascending=[False, False, True, False],
         na_position="last",
         ignore_index=True,
     )
     result["recommended"] = False
-    candidates = result.index[result["eligible"] & ~result["is_edge"]]
+    candidates = result.index[result["stable_candidate"]]
     if len(candidates):
         result.loc[candidates[0], "recommended"] = True
     return result
@@ -112,6 +174,7 @@ def main() -> None:
 
     print(f"\nSENSITIVITY SWEEP — {source}, {args.days} ngày, {len(result)} configs")
     print(f"Đủ gate QA: {int(result['eligible'].sum())}")
+    print(f"Ứng viên ổn định: {int(result['stable_candidate'].sum())}")
     print(f"Đã lưu: {output}")
     print("\nTOP 20")
     print(result.head(20).to_string(index=False))

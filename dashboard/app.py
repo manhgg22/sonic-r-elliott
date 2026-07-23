@@ -37,8 +37,8 @@ with st.sidebar:
     days = st.slider("Số ngày lịch sử", 90, 1095, 365, step=30)
 
     st.subheader("Tầng 1 — Nền")
-    use_d1 = st.checkbox("D1 trên 34-89", False)
-    use_h4 = st.checkbox("H4 trên 34-89", False)
+    use_d1 = st.checkbox("D1 trên 34-89", True)
+    use_h4 = st.checkbox("H4 trên 34-89", True)
 
     st.subheader("Tầng 2 — Sóng chính H1")
     use_cross = st.checkbox("EMA34 cắt lên EMA89", True)
@@ -46,13 +46,14 @@ with st.sidebar:
     cross_bars = st.slider("Cú cắt hiệu lực (nến)", 10, 300, 50)
     use_adx = st.checkbox("ADX filter", True)
     adx_min = st.slider("ADX tối thiểu", 10.0, 35.0, 20.0)
-    use_sep = st.checkbox("EMA separation", False)
+    use_sep = st.checkbox("EMA separation", True)
     sep_min = st.slider("Separation / ATR", 0.0, 2.0, 0.5)
-    use_dow = st.checkbox("Dow HH+HL", False)
+    use_dow = st.checkbox("Dow HH+HL", True)
 
     st.subheader("Elliott / Fibo")
-    use_fib = st.checkbox("Lọc vùng hồi Fibo", False)
+    use_fib = st.checkbox("Lọc vùng hồi Fibo", True)
     fib_lo, fib_hi = st.slider("Vùng Fibo", 0.0, 1.0, (0.30, 0.75))
+    swing_max_age = st.slider("Tuổi swing tối đa (H1)", 50, 500, 200, step=50)
 
     st.subheader("Price Action")
     require_pa = st.checkbox("Bắt buộc có PA", True)
@@ -86,6 +87,7 @@ def build_cfg():
         separation_min=sep_min,
         fib_lo=fib_lo,
         fib_hi=fib_hi,
+        swing_max_age=swing_max_age,
         require_pa=require_pa,
         risk_pct=risk_pct,
         tp_mode=tp_mode,

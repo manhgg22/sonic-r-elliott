@@ -16,7 +16,8 @@ import pandas as pd
 
 from core import indicators as ind
 from core.mtf import align_htf_to_ltf, verify_no_lookahead, resample_ohlcv
-from core.signals import Config, build_signals, main_wave_filters
+from core.signals import Config, build_signals, dow_and_fib_state, main_wave_filters
+from backtest.diagnostics import funnel
 from backtest.engine import Costs, run_backtest
 from backtest.metrics import basic_metrics, frequency_check
 
@@ -134,6 +135,31 @@ def test_fib_math():
     print("  [OK] Fibonacci đúng công thức")
 
 
+def test_swing_retrace_is_bounded():
+    m15 = make_synthetic(90 * 96)
+    h1 = resample_ohlcv(m15, "1h")
+    state = dow_and_fib_state(h1, Config())
+    valid = state[["swing_low", "swing_high"]].dropna()
+    retrace = (
+        valid["swing_high"] - h1.loc[valid.index, "close"]
+    ) / (valid["swing_high"] - valid["swing_low"])
+    in_range = retrace.between(0, 1).mean()
+    assert in_range >= 0.95
+    assert dow_and_fib_state(h1, Config(swing_max_age=0))["swing_low"].isna().all()
+    sig = build_signals(
+        m15,
+        h1,
+        resample_ohlcv(m15, "4h"),
+        resample_ohlcv(m15, "1D"),
+        Config(),
+    )
+    m15_in_range = sig["retrace_pct"].dropna().between(0, 1).mean()
+    assert m15_in_range >= 0.95
+    print(
+        f"  [OK] retrace trong [0, 1]: H1 {in_range:.1%}, M15 {m15_in_range:.1%}"
+    )
+
+
 def test_full_pipeline():
     m15 = make_synthetic(8000)
     h1 = resample_ohlcv(m15, "1h")
@@ -170,6 +196,42 @@ def test_cross_mode_state_vs_event():
     assert 0.40 <= state.mean() <= 0.60
     assert int(event.sum()) == 222, "Nhánh event đã khác baseline cũ"
     print(f"  [OK] Cross state {state.mean():.1%} > event {event.mean():.1%}")
+
+
+def test_config_full_and_sampling_preset():
+    flags = [
+        "use_d1_filter",
+        "use_h4_filter",
+        "use_cross_filter",
+        "use_adx_filter",
+        "use_separation_filter",
+        "use_dow_filter",
+        "use_fib_filter",
+    ]
+    assert all(getattr(Config(), flag) for flag in flags)
+    sampling = Config.baseline_sampling()
+    assert sampling.use_cross_filter and sampling.use_adx_filter
+    assert not any(
+        getattr(sampling, flag)
+        for flag in [
+            "use_d1_filter",
+            "use_h4_filter",
+            "use_separation_filter",
+            "use_dow_filter",
+            "use_fib_filter",
+        ]
+    )
+
+    m15 = make_synthetic(2000)
+    h1 = resample_ohlcv(m15, "1h")
+    h4 = resample_ohlcv(m15, "4h")
+    d1 = resample_ohlcv(m15, "1D")
+    strict = funnel(build_signals(m15, h1, h4, d1, Config()))
+    loose = funnel(build_signals(m15, h1, h4, d1, sampling))
+    assert strict["active"].eq("ON").all()
+    assert set(loose.loc[loose["active"] == "OFF", "cumulative"]) == {"-"}
+    assert strict["solo_count"].equals(loose["solo_count"])
+    print("  [OK] Config đủ 7 filter; preset debug và funnel ON/OFF đúng")
 
 
 def test_filters_not_mutually_exclusive():
@@ -247,6 +309,7 @@ if __name__ == "__main__":
     test_adx_range()
     test_fib_math()
     test_zigzag_has_lag()
+    test_swing_retrace_is_bounded()
 
     print("\n[2] Multi-timeframe (chống look-ahead)")
     test_mtf_no_lookahead()
@@ -256,6 +319,7 @@ if __name__ == "__main__":
     print("\n[3] Pipeline đầy đủ")
     sig = test_full_pipeline()
     test_cross_mode_state_vs_event()
+    test_config_full_and_sampling_preset()
     test_filters_not_mutually_exclusive()
     test_signal_frequency_in_range()
 

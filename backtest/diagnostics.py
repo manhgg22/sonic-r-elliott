@@ -38,27 +38,33 @@ def funnel(sig: pd.DataFrame) -> pd.DataFrame:
     """
     Đếm số nến còn lại sau từng tầng lọc.
 
-    Trả về: stage | solo_count | cumulative | pct_total | killed.
+    Trả về: stage | solo_count | active | cumulative | pct_total | killed.
     """
     mask = pd.Series(True, index=sig.index)
     active = set(sig.attrs.get("active_filters", FILTERS))
     previous = len(sig)
     rows = []
     for stage in FILTERS:
-        if stage in active:
+        is_active = stage in active
+        solo_count = int(sig[stage].sum())
+        if is_active:
             mask &= sig[stage].fillna(False)
-        solo_count = int(sig[stage].sum()) if stage in active else len(sig)
-        cumulative = int(mask.sum())
+            cumulative = int(mask.sum())
+            pct_total = round(100 * cumulative / max(len(sig), 1), 3)
+            killed = previous - cumulative
+            previous = cumulative
+        else:
+            cumulative = pct_total = killed = "-"
         rows.append(
             {
                 "stage": stage,
                 "solo_count": solo_count,
+                "active": "ON" if is_active else "OFF",
                 "cumulative": cumulative,
-                "pct_total": round(100 * cumulative / max(len(sig), 1), 3),
-                "killed": previous - cumulative,
+                "pct_total": pct_total,
+                "killed": killed,
             }
         )
-        previous = cumulative
     return pd.DataFrame(rows)
 
 
@@ -179,10 +185,12 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=365)
     parser.add_argument("--synthetic", action="store_true")
     parser.add_argument("--cross-mode", choices=["state", "event"], default="state")
+    parser.add_argument("--baseline-sampling", action="store_true")
     args = parser.parse_args()
 
     m15, h1, h4, d1 = load_data(args.symbol, args.days, args.synthetic)
-    cfg = Config(cross_mode=args.cross_mode)
+    cfg = Config.baseline_sampling() if args.baseline_sampling else Config()
+    cfg.cross_mode = args.cross_mode
     sig = build_signals(m15, h1, h4, d1, cfg)
 
     source = "synthetic" if args.synthetic else args.symbol

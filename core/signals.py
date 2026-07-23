@@ -46,6 +46,7 @@ class Config:
     # ZigZag
     zz_left: int = 5
     zz_right: int = 5
+    swing_max_age: int = 200        # nến H1
 
     # Tầng 3 — vào lệnh M15
     value_zone_source: str = "h1"    # 'h1' hoặc 'm15'
@@ -61,15 +62,25 @@ class Config:
     tp_mode: str = "fixed_2r"        # 'fixed_2r' | 'sr_level' | 'fib_extension'
     tp_r_multiple: float = 2.0
 
-    # Baseline lấy mẫu: cross + ADX + Value Zone + PA.
-    # Các filter còn lại vẫn được tính và có thể bật để ablation/sweep.
-    use_d1_filter: bool = False
-    use_h4_filter: bool = False
+    # Phương pháp đầy đủ: 7 filter đều bật.
+    use_d1_filter: bool = True
+    use_h4_filter: bool = True
     use_cross_filter: bool = True
     use_adx_filter: bool = True
-    use_separation_filter: bool = False
-    use_dow_filter: bool = False
-    use_fib_filter: bool = False
+    use_separation_filter: bool = True
+    use_dow_filter: bool = True
+    use_fib_filter: bool = True
+
+    @classmethod
+    def baseline_sampling(cls) -> "Config":
+        """Preset lỏng chỉ để lấy mẫu khi debug, không phải phương pháp thật."""
+        return cls(
+            use_d1_filter=False,
+            use_h4_filter=False,
+            use_separation_filter=False,
+            use_dow_filter=False,
+            use_fib_filter=False,
+        )
 
     def to_dict(self):
         return asdict(self)
@@ -189,6 +200,14 @@ def dow_and_fib_state(df_h1: pd.DataFrame, cfg: Config) -> pd.DataFrame:
         if last_low is None:
             continue
 
+        current_close = df_h1["close"].iloc[i]
+        if i - last_high.idx > cfg.swing_max_age:
+            continue
+        if current_close < last_low.price:
+            continue
+        if current_close > last_high.price:
+            continue
+
         out.iat[i, 1] = last_low.price
         out.iat[i, 2] = last_high.price
 
@@ -254,6 +273,8 @@ def build_signals(
     sl_, sh_ = h1_al["swing_low"], h1_al["swing_high"]
     rng = sh_ - sl_
     retrace = (sh_ - m15["close"]) / rng.replace(0, np.nan)
+    # H1 quyết định swing; M15 chỉ vô hiệu giá trị đã phá biên ngay tại nến entry.
+    retrace = retrace.where(retrace.between(0, 1))
     sig["retrace_pct"] = retrace
     sig["f_fib"] = ((retrace >= cfg.fib_lo) & (retrace <= cfg.fib_hi)).fillna(False)
     sig["swing_low"] = sl_

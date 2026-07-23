@@ -8,15 +8,17 @@ Bộ công cụ kiểm chứng hệ thống Sonic R (EMA 34/89) kết hợp Elli
 
 | Khung | Vai trò | Điều kiện |
 |---|---|---|
-| **D1 + H4** | Nền xu hướng tùy chọn | Giá trên cụm EMA 34–89 |
-| **H1** | Sóng chính | EMA34 trên EMA89 + ADX |
+| **D1 + H4** | Nền xu hướng | Giá trên cụm EMA 34–89 |
+| **H1** | Sóng chính | EMA34 trên EMA89 + ADX + separation + Dow/Fibo |
 | **M15** | Vào lệnh | Hồi về Value Zone + Price Action |
 
-Baseline lấy mẫu mặc định bật `cross(state) + ADX + Value Zone + PA`.
-D1, H4, separation, Dow và Fibo vẫn được tính nhưng mặc định tắt; bật lại
-trên dashboard để kiểm chứng từng giả thuyết. Baseline này là cấu hình tối
-thiểu đạt 115 lệnh BTC/USDT trong cửa sổ 365 ngày kiểm thử, không phải cấu
-hình có lợi nhuận: expectancy quan sát được là âm.
+`Config()` và dashboard mặc định bật đủ 7 filter. Preset
+`Config.baseline_sampling()` chỉ dùng để lấy mẫu khi debug; không đại diện
+cho phương pháp đầy đủ.
+
+Trên cửa sổ BTC/USDT 2025-07-23 → 2026-07-23, cấu hình đầy đủ và cả 1.296
+cấu hình sensitivity đều cho 0 lệnh. Đây là kết quả kịch bản C: phương pháp
+mô tả hiện chặt hơn hành vi giao dịch thực tế, không phải bằng chứng có edge.
 
 **Thoát lệnh — 3 chế độ chạy song song để so sánh:**
 
@@ -56,11 +58,12 @@ streamlit run dashboard/app.py
 ```bash
 python -m backtest.diagnostics --synthetic --days 90
 python -m backtest.diagnostics --symbol BTC/USDT --days 365
+python -m backtest.diagnostics --synthetic --days 90 --baseline-sampling
 python -m backtest.sweep --symbol BTC/USDT --days 365
 ```
 Sweep luôn bật bộ filter strict và lưu CSV vào `results/`. Cấu hình chỉ được
 đánh dấu `recommended` khi có ít nhất 100 lệnh, đạt 0.3–2.0 lệnh/ngày và
-không nằm ở rìa lưới tham số.
+không nằm ở rìa lưới, đồng thời có hàng xóm cũng đạt gate.
 
 **5. Pine Script:**
 Mở `sonic_r_elliott.pine`, copy vào Pine Editor trên TradingView, Add to Chart.
