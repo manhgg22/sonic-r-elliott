@@ -1,0 +1,270 @@
+//@version=5
+// =============================================================================
+// SONIC R + ELLIOTT — Multi-Timeframe System
+//
+// Triết lý: hệ thống ít lệnh, chờ đúng điểm vào.
+// Bộ lọc được thiết kế để LOẠI BỎ sideway, nơi mà EMA cắt nhau
+// tạo ra tín hiệu giả nhiều nhất.
+//
+// Cấu trúc:
+//   D1 + H4 : giá nằm trên cụm EMA 34-89          (nền xu hướng)
+//   H1      : EMA34 cắt lên EMA89 + ADX + Dow      (sóng chính)
+//   M15     : hồi về Value Zone + Price Action     (vào lệnh)
+//
+// LƯU Ý: dùng lookahead_off + barmerge.gaps_off cho mọi request.security
+// để tránh nhìn thấy nến khung lớn chưa đóng.
+// =============================================================================
+
+indicator("Sonic R + Elliott MTF", overlay=true, max_labels_count=500,
+          max_lines_count=500, max_boxes_count=500)
+
+// ----------------------------------------------------------------- INPUTS
+grpEMA = "Sonic R"
+emaFast   = input.int(34, "EMA nhanh (Dragon)", group=grpEMA)
+emaSlow   = input.int(89, "EMA chậm (Trend)",  group=grpEMA)
+showEMA200 = input.bool(true, "Hiện EMA 200",  group=grpEMA)
+
+grpTF = "Khung thời gian"
+tfBase1  = input.timeframe("D",   "Nền 1",        group=grpTF)
+tfBase2  = input.timeframe("240", "Nền 2",        group=grpTF)
+tfMain   = input.timeframe("60",  "Sóng chính",   group=grpTF)
+
+grpFilter = "Bộ lọc chống sideway"
+useADX      = input.bool(true,  "Dùng ADX",           group=grpFilter)
+adxLen      = input.int(14,     "ADX period",         group=grpFilter)
+adxMin      = input.float(20,   "ADX tối thiểu",      group=grpFilter)
+useSep      = input.bool(true,  "Dùng EMA separation", group=grpFilter)
+sepMin      = input.float(0.5,  "Separation / ATR",   group=grpFilter)
+crossBars   = input.int(50,     "Cú cắt hiệu lực (nến H1)", group=grpFilter)
+
+grpElliott = "Elliott / Fibo"
+useFib   = input.bool(true,  "Lọc vùng hồi Fibo",  group=grpElliott)
+fibLo    = input.float(0.382, "Fibo min",          group=grpElliott)
+fibHi    = input.float(0.618, "Fibo max",          group=grpElliott)
+zzLen    = input.int(5,      "ZigZag pivot len",   group=grpElliott)
+
+grpPA = "Price Action"
+usePA        = input.bool(true, "Bắt buộc có PA", group=grpPA)
+useEngulf    = input.bool(true, "Engulfing",      group=grpPA)
+usePin       = input.bool(true, "Pin bar",        group=grpPA)
+useBOS       = input.bool(true, "Break of Structure", group=grpPA)
+
+grpRisk = "Risk / TP"
+slLookback = input.int(5,    "SL: đáy N nến",      group=grpRisk)
+slBuffer   = input.float(0.5,"SL buffer (x ATR)",  group=grpRisk)
+tpMode     = input.string("2R", "Chế độ TP", options=["2R","Fibo Extension","Kháng cự cũ"], group=grpRisk)
+rMultiple  = input.float(2.0, "R multiple",        group=grpRisk)
+
+grpVis = "Hiển thị"
+showZone  = input.bool(true, "Tô Value Zone", group=grpVis)
+showTable = input.bool(true, "Bảng trạng thái", group=grpVis)
+showLevels= input.bool(true, "Vẽ Entry/SL/TP", group=grpVis)
+
+// ----------------------------------------------------------------- HELPERS
+sonicBands(src_h, src_l, src_c, fastLen, slowLen) =>
+    [ta.ema(src_h, fastLen), ta.ema(src_c, fastLen),
+     ta.ema(src_l, fastLen), ta.ema(src_c, slowLen)]
+
+// Kiểm tra nền: giá trên Dragon VÀ Dragon trên trend line
+baseTrendUp(c, eLow, eSlow) =>
+    c > eLow and eLow > eSlow
+
+adxValue(diLength, adxSmoothing) =>
+    [_, _, value] = ta.dmi(diLength, adxSmoothing)
+    value
+
+// ----------------------------------------------------------------- LOCAL (chart TF)
+[dHigh, dClose, dLow, trendLine] = sonicBands(high, low, close, emaFast, emaSlow)
+ema200 = ta.ema(close, 200)
+atrLocal = ta.atr(14)
+
+// ----------------------------------------------------------------- HTF DATA
+// D1
+[d1c, d1eLow, d1eSlow] = request.security(syminfo.tickerid, tfBase1,
+     [close, ta.ema(low, emaFast), ta.ema(close, emaSlow)],
+     lookahead=barmerge.lookahead_off)
+
+// H4
+[h4c, h4eLow, h4eSlow] = request.security(syminfo.tickerid, tfBase2,
+     [close, ta.ema(low, emaFast), ta.ema(close, emaSlow)],
+     lookahead=barmerge.lookahead_off)
+
+// H1 — sóng chính
+h1_eFastC = ta.ema(close, emaFast)
+h1_eFastH = ta.ema(high, emaFast)
+h1_eFastL = ta.ema(low, emaFast)
+h1_eSlow  = ta.ema(close, emaSlow)
+
+[m_eFastH, m_eFastC, m_eFastL, m_eSlow, m_adx, m_atr, m_close] =
+     request.security(syminfo.tickerid, tfMain,
+     [ta.ema(high, emaFast), ta.ema(close, emaFast), ta.ema(low, emaFast),
+      ta.ema(close, emaSlow), adxValue(adxLen, adxLen), ta.atr(14), close],
+     lookahead=barmerge.lookahead_off)
+
+// Đếm số nến kể từ cú cắt trên khung sóng chính
+m_crossUp = request.security(syminfo.tickerid, tfMain,
+     ta.barssince(ta.crossover(ta.ema(close, emaFast), ta.ema(close, emaSlow))),
+     lookahead=barmerge.lookahead_off)
+
+// ----------------------------------------------------------------- FILTERS
+// Tầng 1 — nền
+f_d1 = baseTrendUp(d1c, d1eLow, d1eSlow)
+f_h4 = baseTrendUp(h4c, h4eLow, h4eSlow)
+
+// Tầng 2 — sóng chính
+f_cross = m_eFastC > m_eSlow and (na(m_crossUp) ? false : m_crossUp <= crossBars)
+f_adx   = not useADX or m_adx > adxMin
+separation = math.abs(m_eFastC - m_eSlow) / m_atr
+f_sep   = not useSep or separation > sepMin
+
+// Dow structure — dùng pivot ĐÃ xác nhận (ta.pivothigh có độ trễ tự nhiên)
+ph = ta.pivothigh(high, zzLen, zzLen)
+pl = ta.pivotlow(low, zzLen, zzLen)
+
+var float lastPH = na, var float prevPH = na
+var float lastPL = na, var float prevPL = na
+
+if not na(ph)
+    prevPH := lastPH
+    lastPH := ph
+if not na(pl)
+    prevPL := lastPL
+    lastPL := pl
+
+f_dow = not na(lastPH) and not na(prevPH) and not na(lastPL) and not na(prevPL)
+        and lastPH > prevPH and lastPL > prevPL
+
+// Elliott Tầng 1 — pullback trong vùng Fibo hợp lệ
+swingRange = lastPH - lastPL
+retracePct = swingRange > 0 ? (lastPH - close) / swingRange : na
+f_fib = not useFib or (not na(retracePct) and retracePct >= fibLo and retracePct <= fibHi)
+
+// Tầng 3 — Value Zone (lấy từ khung sóng chính)
+vzTop = m_eFastH
+vzBot = m_eSlow
+f_zone = low <= vzTop and close > vzBot
+
+// Price Action
+pa_engulf = useEngulf and close > open and close[1] < open[1]
+            and close > open[1] and open < close[1]
+body = math.abs(close - open)
+lowerWick = math.min(open, close) - low
+upperWick = high - math.max(open, close)
+pa_pin = usePin and lowerWick > 2 * body and lowerWick > upperWick and body > 0
+pa_bos = useBOS and close > ta.highest(high, 3)[1]
+f_pa = not usePA or (pa_engulf or pa_pin or pa_bos)
+
+// ----------------------------------------------------------------- SIGNAL
+allFilters = f_d1 and f_h4 and f_cross and f_adx and f_sep and f_dow and f_fib
+entrySignal = allFilters and f_zone and f_pa
+
+// Chỉ báo 1 lần mỗi setup (không spam)
+var int lastSignalBar = -1000
+freshSignal = entrySignal and (bar_index - lastSignalBar > 8)
+if freshSignal
+    lastSignalBar := bar_index
+
+// ----------------------------------------------------------------- RISK LEVELS
+slRaw = math.min(ta.lowest(low, slLookback), vzBot)
+slLevel = slRaw - slBuffer * atrLocal
+riskUnit = close - slLevel
+
+tp2r = close + rMultiple * riskUnit
+tpFib = not na(swingRange) ? low + 1.618 * swingRange : close + 3 * riskUnit
+tpSR = na(lastPH) ? close + 2 * riskUnit : lastPH
+
+tpLevel = tpMode == "2R" ? tp2r : tpMode == "Fibo Extension" ? tpFib : tpSR
+rrRatio = riskUnit > 0 ? (tpLevel - close) / riskUnit : na
+
+// ----------------------------------------------------------------- PLOTS
+pFastH = plot(dHigh,  "Dragon High", color=color.new(color.teal, 40), linewidth=1)
+pFastL = plot(dLow,   "Dragon Low",  color=color.new(color.teal, 40), linewidth=1)
+plot(dClose, "Dragon Mid", color=color.new(color.white, 50), linewidth=1)
+fill(pFastH, pFastL, color=color.new(color.teal, 88), title="Dragon Band")
+
+plot(trendLine, "EMA 89", color=color.new(color.orange, 0), linewidth=2)
+plot(showEMA200 ? ema200 : na, "EMA 200", color=color.new(color.fuchsia, 30), linewidth=1)
+
+// Value Zone từ khung sóng chính
+vzT = plot(showZone ? vzTop : na, "VZ Top", color=color.new(color.blue, 70))
+vzB = plot(showZone ? vzBot : na, "VZ Bot", color=color.new(color.blue, 70))
+fill(vzT, vzB, color=color.new(color.blue, 90), title="Value Zone")
+
+// Nền màu theo trạng thái nền
+bgcolor(f_d1 and f_h4 ? color.new(color.green, 95) : na, title="Nền uptrend")
+
+// Marker tín hiệu
+plotshape(freshSignal, "BUY", shape.triangleup, location.belowbar,
+          color=color.new(color.lime, 0), size=size.small, text="BUY")
+
+// Vẽ Entry/SL/TP
+if showLevels and freshSignal
+    label.new(bar_index, low,
+              text = "E: " + str.tostring(close, format.mintick) +
+                     "\nSL: " + str.tostring(slLevel, format.mintick) +
+                     "\nTP: " + str.tostring(tpLevel, format.mintick) +
+                     "\nR:R " + str.tostring(rrRatio, "#.##"),
+              style=label.style_label_up, color=color.new(color.green, 20),
+              textcolor=color.white, size=size.small)
+    line.new(bar_index, slLevel, bar_index + 20, slLevel,
+             color=color.red, style=line.style_dashed)
+    line.new(bar_index, tpLevel, bar_index + 20, tpLevel,
+             color=color.green, style=line.style_dashed)
+
+// ----------------------------------------------------------------- INFO TABLE
+if showTable and barstate.islast
+    var table t = table.new(position.top_right, 2, 10,
+                            border_width=1, frame_width=1)
+    okCol = color.new(color.green, 20)
+    noCol = color.new(color.red, 20)
+
+    table.cell(t, 0, 0, "SONIC R + ELLIOTT", bgcolor=color.new(color.gray, 30),
+               text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 0, "", bgcolor=color.new(color.gray, 30))
+
+    table.cell(t, 0, 1, "D1 nền",  text_size=size.small, text_color=color.white)
+    table.cell(t, 1, 1, f_d1 ? "OK" : "X", bgcolor=f_d1 ? okCol : noCol,
+               text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 2, "H4 nền",  text_size=size.small, text_color=color.white)
+    table.cell(t, 1, 2, f_h4 ? "OK" : "X", bgcolor=f_h4 ? okCol : noCol,
+               text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 3, "H1 cắt",  text_size=size.small, text_color=color.white)
+    table.cell(t, 1, 3, f_cross ? "OK" : "X", bgcolor=f_cross ? okCol : noCol,
+               text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 4, "ADX " + str.tostring(m_adx, "#.#"),
+               text_size=size.small, text_color=color.white)
+    table.cell(t, 1, 4, f_adx ? "OK" : "X", bgcolor=f_adx ? okCol : noCol,
+               text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 5, "Separation", text_size=size.small, text_color=color.white)
+    table.cell(t, 1, 5, f_sep ? "OK" : "X", bgcolor=f_sep ? okCol : noCol,
+               text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 6, "Dow HH+HL", text_size=size.small, text_color=color.white)
+    table.cell(t, 1, 6, f_dow ? "OK" : "X", bgcolor=f_dow ? okCol : noCol,
+               text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 7, "Fibo " + (na(retracePct) ? "-" : str.tostring(retracePct*100, "#") + "%"),
+               text_size=size.small, text_color=color.white)
+    table.cell(t, 1, 7, f_fib ? "OK" : "X", bgcolor=f_fib ? okCol : noCol,
+               text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 8, "Value Zone", text_size=size.small, text_color=color.white)
+    table.cell(t, 1, 8, f_zone ? "CHẠM" : "-", bgcolor=f_zone ? okCol : noCol,
+               text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 9, "R:R", text_size=size.small, text_color=color.white)
+    table.cell(t, 1, 9, na(rrRatio) ? "-" : str.tostring(rrRatio, "#.##"),
+               bgcolor=color.new(color.blue, 50),
+               text_color=color.white, text_size=size.small)
+
+// ----------------------------------------------------------------- ALERTS
+alertcondition(freshSignal, "Sonic R BUY Setup",
+     "SONIC R BUY {{ticker}} @ {{close}} — đủ điều kiện D1/H4/H1 + Value Zone + PA")
+
+alertcondition(f_d1 and f_h4 and f_cross and not f_zone,
+     "Sonic R — Chờ hồi về Value Zone",
+     "{{ticker}}: nền đã sẵn sàng, đang chờ giá hồi về Value Zone")
