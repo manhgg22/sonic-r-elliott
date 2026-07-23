@@ -6,7 +6,12 @@ from dataclasses import replace
 
 import pandas as pd
 
-from core.mtf import resample_ohlcv
+from core.mtf import (
+    align_htf_to_ltf,
+    map_timeframes,
+    resample_ohlcv,
+    verify_no_lookahead,
+)
 from core.signals import Config, build_signals
 from data.loader import fetch_ohlcv
 
@@ -94,10 +99,9 @@ def _active_filters(cfg: Config) -> list[str]:
 
 
 def marginal_contribution(
-    m15: pd.DataFrame,
-    h1: pd.DataFrame,
-    h4: pd.DataFrame,
-    d1: pd.DataFrame,
+    entry: pd.DataFrame,
+    main: pd.DataFrame,
+    base: pd.DataFrame,
     cfg: Config,
 ) -> pd.DataFrame:
     """
@@ -105,14 +109,14 @@ def marginal_contribution(
 
     Trả về: filter | signals_without | delta | per_day.
     """
-    sig = build_signals(m15, h1, h4, d1, cfg)
+    sig = build_signals(entry, main, base, cfg)
     active = _active_filters(cfg)
-    base = int(sig["entry_signal"].sum())
-    days = max(int(m15.index.normalize().nunique()), 1)
+    baseline = int(sig["entry_signal"].sum())
+    days = max(int(entry.index.normalize().nunique()), 1)
     rows = []
     for removed in FILTERS:
         if removed not in active:
-            count = base
+            count = baseline
         else:
             remaining = [name for name in active if name != removed]
             count = int(sig[remaining].all(axis=1).sum())
@@ -120,7 +124,7 @@ def marginal_contribution(
             {
                 "filter": removed,
                 "signals_without": count,
-                "delta": count - base,
+                "delta": count - baseline,
                 "per_day": round(count / days, 3),
             }
         )
@@ -204,18 +208,31 @@ def main() -> None:
     parser.add_argument("--baseline-sampling", action="store_true")
     args = parser.parse_args()
 
-    m15, h1, h4, d1 = load_data(args.symbol, args.days, args.synthetic)
+    m15, _, _, _ = load_data(args.symbol, args.days, args.synthetic)
     cfg = Config.baseline_sampling() if args.baseline_sampling else Config()
     cfg.cross_mode = args.cross_mode
-    sig = build_signals(m15, h1, h4, d1, cfg)
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
+    sig = build_signals(entry, main, base, cfg)
 
     source = "synthetic" if args.synthetic else args.symbol
-    print(f"\nDIAGNOSTICS — {source}, {args.days} ngày, cross={args.cross_mode}")
+    print(
+        f"\nDIAGNOSTICS — {source}, {args.days} ngày, "
+        f"{cfg.tf_base}/{cfg.tf_main}/{cfg.tf_entry}, cross={args.cross_mode}"
+    )
+    for label, raw in [("main→entry", main), ("base→entry", base)]:
+        aligned = align_htf_to_ltf(raw[["close"]], entry.index)
+        check = verify_no_lookahead(raw, aligned)
+        print(
+            f"LOOK-AHEAD {label}: {check['violations']} vi phạm/"
+            f"{check['checked']} mẫu"
+        )
     print(f"ACTIVE FILTERS: {', '.join(sig.attrs['active_filters'])}")
     print("\nFUNNEL (solo | cumulative | killed)")
     print(funnel(sig).to_string(index=False))
     print("\nMARGINAL CONTRIBUTION")
-    print(marginal_contribution(m15, h1, h4, d1, cfg).to_string(index=False))
+    print(marginal_contribution(entry, main, base, cfg).to_string(index=False))
     print("\nOVERLAP (actual / expected nếu độc lập)")
     print(overlap_matrix(sig, FILTERS).to_string())
     print("\nRETRACE KHI CHẠM VALUE ZONE")

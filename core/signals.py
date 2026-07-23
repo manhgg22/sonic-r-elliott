@@ -1,11 +1,11 @@
 """
 Signal Engine — dịch phương pháp Sonic R + Dow + PA thành điều kiện số học.
 
-  Tầng 1  "H4 giá nằm trên 34-89"        -> nền xu hướng (D1 tham khảo)
-  Tầng 2  "H1 EMA34 trên EMA89"          -> sóng chính
+  Tầng 1  base giá nằm trên 34-89        -> nền xu hướng
+  Tầng 2  main EMA34 trên EMA89          -> sóng chính
           "sideway cực kì dễ toang"      -> ADX + separation filter
           "dùng Dow"                     -> HH + HL bắt buộc
-  Tầng 3  "hồi về vùng giá trị"          -> M15 chạm Value Zone
+  Tầng 3  "hồi về vùng giá trị"          -> entry chạm Value Zone
           "PA đẹp"                       -> engulfing / pinbar / BOS
   TP      Fibo extension                 -> "ăn sóng dài"
 
@@ -24,11 +24,16 @@ from .mtf import align_htf_to_ltf
 class Config:
     """Toàn bộ tham số hệ thống. Chỉnh được từ dashboard."""
 
+    # Mapping khung
+    tf_base: str = "1D"
+    tf_main: str = "4H"
+    tf_entry: str = "1H"
+
     # EMA
     ema_fast: int = 34
     ema_slow: int = 89
 
-    # Tầng 2 — sóng chính H1
+    # Tầng 2 — sóng chính
     cross_mode: str = "state"        # 'state' | 'event'
     cross_valid_bars: int = 50       # cú cắt còn hiệu lực bao lâu
     adx_period: int = 14
@@ -43,10 +48,10 @@ class Config:
     # ZigZag
     zz_left: int = 5
     zz_right: int = 5
-    swing_max_age: int = 200        # nến H1
+    swing_max_age: int = 100        # nến khung main
 
-    # Tầng 3 — vào lệnh M15
-    value_zone_source: str = "h1"    # 'h1' hoặc 'm15'
+    # Tầng 3 — khung entry
+    value_zone_source: str = "main"
     require_pa: bool = True
     pa_patterns: tuple[str, ...] = ("engulfing", "pinbar", "bos")
 
@@ -55,6 +60,7 @@ class Config:
     sl_lookback: int = 5
     sl_buffer_atr: float = 0.5
     risk_pct: float = 1.0
+    max_bars: int = 150
 
     # TP
     tp_mode: str = "fixed_2r"        # 'fixed_2r' | 'sr_level' | 'fib_extension'
@@ -62,7 +68,7 @@ class Config:
     tp_fib_1: float = 1.618
     tp_fib_2: float = 2.618
 
-    # Entry chuẩn: H4 + H1 + Dow + Value Zone + PA. D1/Fibo chỉ để ablation.
+    # Entry chuẩn: base + main + Dow + Value Zone + PA. Fibo chỉ để ablation.
     use_d1_filter: bool = False
     use_h4_filter: bool = True
     use_cross_filter: bool = True
@@ -70,6 +76,17 @@ class Config:
     use_separation_filter: bool = True
     use_dow_filter: bool = True
     use_fib_filter: bool = False
+
+    @classmethod
+    def m15_entry(cls) -> "Config":
+        """Cấu hình M15 cũ — để đối chứng."""
+        return cls(
+            tf_base="4H",
+            tf_main="1H",
+            tf_entry="15m",
+            swing_max_age=200,
+            max_bars=500,
+        )
 
     @classmethod
     def baseline_sampling(cls) -> "Config":
@@ -104,16 +121,16 @@ def base_trend_ok(df_htf: pd.DataFrame, cfg: Config) -> pd.Series:
 
 # ------------------------------------------------------------------ Tầng 2
 
-def main_wave_filters(df_h1: pd.DataFrame, cfg: Config) -> pd.DataFrame:
+def main_wave_filters(df_main: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     """
-    Toàn bộ bộ lọc trên khung sóng chính H1.
+    Toàn bộ bộ lọc trên khung sóng chính.
     Trả về DataFrame, mỗi filter một cột -> phục vụ ablation test.
     """
-    bands = ind.sonic_r_bands(df_h1, cfg.ema_fast, cfg.ema_slow)
-    atr_h1 = ind.atr(df_h1, cfg.atr_period)
-    adx_h1 = ind.adx(df_h1, cfg.adx_period)
+    bands = ind.sonic_r_bands(df_main, cfg.ema_fast, cfg.ema_slow)
+    atr_main = ind.atr(df_main, cfg.atr_period)
+    adx_main = ind.adx(df_main, cfg.adx_period)
 
-    out = pd.DataFrame(index=df_h1.index)
+    out = pd.DataFrame(index=df_main.index)
 
     # --- "EMA34 cắt lên EMA89 -> xu hướng tăng được xác nhận"
     above = bands["ema_fast_close"] > bands["ema_slow"]
@@ -121,9 +138,9 @@ def main_wave_filters(df_h1: pd.DataFrame, cfg: Config) -> pd.DataFrame:
         out["cross_fresh"] = above
     elif cfg.cross_mode == "event":
         crossed_up = above & (~above.shift(1, fill_value=False))
-        bars_since = pd.Series(np.nan, index=df_h1.index)
+        bars_since = pd.Series(np.nan, index=df_main.index)
         last_cross = -10**9
-        for i in range(len(df_h1)):
+        for i in range(len(df_main)):
             if crossed_up.iloc[i]:
                 last_cross = i
             bars_since.iloc[i] = i - last_cross
@@ -132,8 +149,8 @@ def main_wave_filters(df_h1: pd.DataFrame, cfg: Config) -> pd.DataFrame:
         raise ValueError("cross_mode phải là 'state' hoặc 'event'")
 
     # --- "sideway anh em cực kì dễ toang" -> hai lớp chống sideway
-    out["adx_ok"] = adx_h1 > cfg.adx_min
-    separation = (bands["ema_fast_close"] - bands["ema_slow"]).abs() / atr_h1
+    out["adx_ok"] = adx_main > cfg.adx_min
+    separation = (bands["ema_fast_close"] - bands["ema_slow"]).abs() / atr_main
     out["separation_ok"] = separation > cfg.separation_min
     out["slope_ok"] = ind.slope(bands["ema_slow"], cfg.slope_lookback) > 0
 
@@ -141,23 +158,23 @@ def main_wave_filters(df_h1: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     out["ema_fast_high"] = bands["ema_fast_high"]
     out["ema_fast_low"] = bands["ema_fast_low"]
     out["ema_slow"] = bands["ema_slow"]
-    out["atr"] = atr_h1
-    out["adx"] = adx_h1
+    out["atr"] = atr_main
+    out["adx"] = adx_main
     out["separation"] = separation
 
     return out
 
 
-def dow_and_fib_state(df_h1: pd.DataFrame, cfg: Config) -> pd.DataFrame:
+def dow_and_fib_state(df_main: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     """
     "dùng Dow" + proxy Elliott Tầng 1.
 
-    Với mỗi nến H1, tính:
+    Với mỗi nến main, tính:
       - cấu trúc Dow tại thời điểm đó (chỉ dùng pivot ĐÃ xác nhận)
       - swing đẩy gần nhất (low -> high) để đo Fibo
     """
-    pivots = ind.zigzag_confirmed(df_h1, cfg.zz_left, cfg.zz_right)
-    out = pd.DataFrame(index=df_h1.index)
+    pivots = ind.zigzag_confirmed(df_main, cfg.zz_left, cfg.zz_right)
+    out = pd.DataFrame(index=df_main.index)
     out["dow"] = "unclear"
     out["swing_low"] = np.nan
     out["swing_high"] = np.nan
@@ -169,7 +186,7 @@ def dow_and_fib_state(df_h1: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     visible, highs, lows = [], [], []
     next_pivot = 0
 
-    for i in range(len(df_h1)):
+    for i in range(len(df_main)):
         while (
             next_pivot < len(pivot_rows)
             and pivot_rows[next_pivot].confirmed_at <= i
@@ -200,7 +217,7 @@ def dow_and_fib_state(df_h1: pd.DataFrame, cfg: Config) -> pd.DataFrame:
         if last_low is None:
             continue
 
-        current_close = df_h1["close"].iloc[i]
+        current_close = df_main["close"].iloc[i]
         if i - last_high.idx > cfg.swing_max_age:
             continue
         if current_close < last_low.price:
@@ -217,76 +234,73 @@ def dow_and_fib_state(df_h1: pd.DataFrame, cfg: Config) -> pd.DataFrame:
 # ------------------------------------------------------------------ Tầng 3
 
 def build_signals(
-    m15: pd.DataFrame,
-    h1: pd.DataFrame,
-    h4: pd.DataFrame,
-    d1: pd.DataFrame,
+    entry_df: pd.DataFrame,
+    main_df: pd.DataFrame,
+    base_df: pd.DataFrame,
     cfg: Config,
 ) -> pd.DataFrame:
     """
-    Gộp H4, H1, Dow, Value Zone và PA để sinh tín hiệu entry trên M15.
+    entry_df: khung vào lệnh (Value Zone, PA, SL).
+    main_df: khung sóng chính (EMA cross, ADX, separation, Dow).
+    base_df: khung nền (giá trên EMA34-89).
 
-    D1 và vùng hồi Fibo được tính để tham khảo/ablation nhưng mặc định không lọc
-    entry. Swing vẫn luôn được tính vì TP Fibo extension phụ thuộc vào nó.
-
-    Trả về DataFrame index=M15 với:
+    Trả về DataFrame index=entry với:
       - từng cột filter (để ablation)
       - cột entry_signal cuối cùng
       - các mức SL/TP đề xuất
     """
-    # --- Tầng 1: nền H4; D1 tham khảo, ghép xuống M15 (đã shift chống look-ahead)
-    d1_ok = base_trend_ok(d1, cfg).to_frame()
-    h4_ok = base_trend_ok(h4, cfg).to_frame()
-    d1_al = align_htf_to_ltf(d1_ok, m15.index)
-    h4_al = align_htf_to_ltf(h4_ok, m15.index)
+    # --- Tầng 1: base -> entry, shift chống look-ahead
+    base_ok = base_trend_ok(base_df, cfg).to_frame()
+    base_al = align_htf_to_ltf(base_ok, entry_df.index)
 
-    # --- Tầng 2: H1
-    h1_filters = main_wave_filters(h1, cfg)
-    h1_struct = dow_and_fib_state(h1, cfg)
-    h1_all = pd.concat([h1_filters, h1_struct], axis=1)
-    h1_al = align_htf_to_ltf(h1_all, m15.index)
+    # --- Tầng 2: main -> entry, shift chống look-ahead
+    main_filters = main_wave_filters(main_df, cfg)
+    main_struct = dow_and_fib_state(main_df, cfg)
+    main_all = pd.concat([main_filters, main_struct], axis=1)
+    main_al = align_htf_to_ltf(main_all, entry_df.index)
 
-    # --- Tầng 3: M15
-    pa = ind.pa_signals(m15)
-    atr_m15 = ind.atr(m15, cfg.atr_period)
+    # --- Tầng 3: entry
+    pa = ind.pa_signals(entry_df)
+    atr_entry = ind.atr(entry_df, cfg.atr_period)
 
-    sig = pd.DataFrame(index=m15.index)
-    sig["close"] = m15["close"]
-    sig["high"] = m15["high"]
-    sig["low"] = m15["low"]
-    sig["atr_m15"] = atr_m15
+    sig = pd.DataFrame(index=entry_df.index)
+    sig["close"] = entry_df["close"]
+    sig["high"] = entry_df["high"]
+    sig["low"] = entry_df["low"]
+    sig["atr_m15"] = atr_entry
 
     # Từng filter -> cột riêng
-    sig["f_d1"] = d1_al["base_ok"].eq(True)
-    sig["f_h4"] = h4_al["base_ok"].eq(True)
-    sig["f_cross"] = h1_al["cross_fresh"].eq(True)
-    sig["f_adx"] = h1_al["adx_ok"].eq(True)
-    sig["f_sep"] = h1_al["separation_ok"].eq(True)
-    sig["f_dow"] = (h1_al["dow"] == "uptrend").fillna(False)
+    # Giữ tên f_h4/f_d1 để tương thích báo cáo cũ; cả hai biểu diễn base hiện tại.
+    sig["f_d1"] = base_al["base_ok"].eq(True)
+    sig["f_h4"] = base_al["base_ok"].eq(True)
+    sig["f_cross"] = main_al["cross_fresh"].eq(True)
+    sig["f_adx"] = main_al["adx_ok"].eq(True)
+    sig["f_sep"] = main_al["separation_ok"].eq(True)
+    sig["f_dow"] = (main_al["dow"] == "uptrend").fillna(False)
 
-    # "hồi về vùng giá trị" — Value Zone lấy từ H1
-    vz_top = h1_al["ema_fast_high"]
-    vz_bot = h1_al["ema_slow"]
+    # "hồi về vùng giá trị" — Value Zone lấy từ khung main
+    vz_top = main_al["ema_fast_high"]
+    vz_bot = main_al["ema_slow"]
     sig["vz_top"] = vz_top
     sig["vz_bot"] = vz_bot
-    touched = (m15["low"] <= vz_top) & (m15["close"] > vz_bot)
+    touched = (entry_df["low"] <= vz_top) & (entry_df["close"] > vz_bot)
     sig["f_value_zone"] = touched.fillna(False)
 
     # Elliott Tầng 1 — pullback nằm trong vùng Fibo hợp lệ
-    sl_, sh_ = h1_al["swing_low"], h1_al["swing_high"]
+    sl_, sh_ = main_al["swing_low"], main_al["swing_high"]
     rng = sh_ - sl_
-    retrace = (sh_ - m15["close"]) / rng.replace(0, np.nan)
-    # H1 quyết định swing; M15 chỉ vô hiệu giá trị đã phá biên ngay tại nến entry.
+    retrace = (sh_ - entry_df["close"]) / rng.replace(0, np.nan)
+    # Main quyết định swing; entry chỉ vô hiệu giá trị đã phá biên.
     retrace = retrace.where(retrace.between(0, 1))
     sig["retrace_pct"] = retrace
     sig["f_fib"] = ((retrace >= cfg.fib_lo) & (retrace <= cfg.fib_hi)).fillna(False)
     sig["swing_low"] = sl_
     sig["swing_high"] = sh_
 
-    # Bối cảnh H1 — cần cho phân tích sideway vs trending sau backtest
-    sig["adx"] = h1_al["adx"]
-    sig["separation"] = h1_al["separation"]
-    sig["dow_state"] = h1_al["dow"]
+    # Bối cảnh main — cần cho phân tích sideway vs trending sau backtest
+    sig["adx"] = main_al["adx"]
+    sig["separation"] = main_al["separation"]
+    sig["dow_state"] = main_al["dow"]
 
     # Price Action
     sig["pa_engulfing"] = pa["engulfing"].fillna(False)
@@ -331,9 +345,9 @@ def build_signals(
     sig.attrs["active_filters"] = active_filters
 
     # --- Mức SL/TP
-    swing_low_m15 = m15["low"].rolling(cfg.sl_lookback).min()
-    sl_raw = pd.concat([swing_low_m15, vz_bot], axis=1).min(axis=1)
-    sig["sl"] = sl_raw - cfg.sl_buffer_atr * atr_m15
+    swing_low_entry = entry_df["low"].rolling(cfg.sl_lookback).min()
+    sl_raw = pd.concat([swing_low_entry, vz_bot], axis=1).min(axis=1)
+    sig["sl"] = sl_raw - cfg.sl_buffer_atr * atr_entry
     sig["risk"] = sig["close"] - sig["sl"]
     sig["tp_2r"] = sig["close"] + cfg.tp_r_multiple * sig["risk"]
 

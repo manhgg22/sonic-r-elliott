@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from dataclasses import replace
 from itertools import product
 from pathlib import Path
 
@@ -65,8 +66,12 @@ def run_sweep(
     )
     thresholds = list(thresholds)
     for zz_left, swing_max_age in structural:
-        cfg = Config(zz_left=zz_left, swing_max_age=swing_max_age)
-        sig = build_signals(m15, h1, h4, d1, cfg)
+        cfg = replace(
+            Config.m15_entry(),
+            zz_left=zz_left,
+            swing_max_age=swing_max_age,
+        )
+        sig = build_signals(m15, h1, h4, cfg)
         static = sig[
             ["f_d1", "f_h4", "f_cross", "f_dow", "f_value_zone", "f_pa"]
         ].all(axis=1)
@@ -105,6 +110,7 @@ def run_sweep(
                     symbol="SWEEP",
                     tp_mode=tp_mode,
                     risk_pct=cfg.risk_pct,
+                    max_bars=cfg.max_bars,
                 )
             else:
                 trades = pd.DataFrame()

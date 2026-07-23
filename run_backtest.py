@@ -9,6 +9,7 @@ Dùng:
 
 import argparse
 import sys
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -17,9 +18,9 @@ sys.stdout.reconfigure(encoding="utf-8")
 import pandas as pd
 
 from core.signals import Config, build_signals
-from core.mtf import resample_ohlcv, align_htf_to_ltf
+from core.mtf import align_htf_to_ltf, map_timeframes
 from core import indicators as ind
-from backtest.engine import run_backtest, Costs
+from backtest.engine import run_backtest
 from backtest.diagnostics import ablation_variants
 from backtest import metrics as mt
 from data.loader import fetch_ohlcv, TOP10, data_quality_check
@@ -41,17 +42,26 @@ def run_one(symbol, days, cfg, tp_mode, cache_max_age=3600):
     if not quality["ok"]:
         raise ValueError(f"Dữ liệu không hợp lệ: {quality}")
 
-    h1 = resample_ohlcv(m15, "1h")
-    h4 = resample_ohlcv(m15, "4h")
-    d1 = resample_ohlcv(m15, "1D")
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
 
-    sig = build_signals(m15, h1, h4, d1, cfg)
-    h1_bands = ind.sonic_r_bands(h1)
-    trail = align_htf_to_ltf(h1_bands[["ema_fast_low"]], m15.index)["ema_fast_low"]
+    sig = build_signals(entry, main, base, cfg)
+    main_bands = ind.sonic_r_bands(main)
+    trail = align_htf_to_ltf(
+        main_bands[["ema_fast_low"]], entry.index
+    )["ema_fast_low"]
 
-    trades = run_backtest(sig, m15, symbol=symbol, tp_mode=tp_mode,
-                          risk_pct=cfg.risk_pct, trail_ema=trail)
-    return trades, m15.index
+    trades = run_backtest(
+        sig,
+        entry,
+        symbol=symbol,
+        tp_mode=tp_mode,
+        risk_pct=cfg.risk_pct,
+        max_bars=cfg.max_bars,
+        trail_ema=trail,
+    )
+    return trades, entry.index
 
 
 def run_universe(symbols, days, cfg, tp_mode):
@@ -88,14 +98,17 @@ def run_ablation(symbols, days, cfg, tp_mode):
     return pd.DataFrame(rows)
 
 
-def run_tp_matrix(symbols, days):
-    rows = []
-    configs = [
-        ("Đầy đủ mới", Config()),
-        ("Bỏ PA", Config(require_pa=False)),
-        ("Thêm Fibo", Config(use_fib_filter=True)),
+def _tp_configs(base_cfg):
+    return [
+        ("Đầy đủ mới", replace(base_cfg)),
+        ("Bỏ PA", replace(base_cfg, require_pa=False)),
+        ("Thêm Fibo", replace(base_cfg, use_fib_filter=True)),
     ]
-    for config_name, cfg in configs:
+
+
+def _matrix_rows(symbols, days, base_cfg):
+    rows = []
+    for config_name, cfg in _tp_configs(base_cfg):
         for tp_mode in ["fixed_2r", "sr_level", "fib_extension"]:
             trades = run_universe(symbols, days, cfg, tp_mode)
             metrics = mt.basic_metrics(trades)
@@ -113,6 +126,11 @@ def run_tp_matrix(symbols, days):
                 "max_dd": metrics.get("max_drawdown_pct"),
                 "avg_win_r": metrics.get("avg_win_r"),
                 "avg_loss_r": metrics.get("avg_loss_r"),
+                "cost_pct_of_r": (
+                    round((abs(metrics["avg_loss_r"]) - 1) * 100, 2)
+                    if metrics.get("avg_loss_r") is not None
+                    else None
+                ),
                 "profit_factor": metrics.get("profit_factor"),
                 "expectancy_positive": bool(expectancy is not None and expectancy > 0),
                 "ci_positive": bool(ci_low is not None and ci_low > 0),
@@ -121,8 +139,49 @@ def run_tp_matrix(symbols, days):
                     and expectancy is not None and expectancy > 0
                     and ci_low is not None and ci_low > 0
                 ),
+                "tf_entry": cfg.tf_entry,
+                "adx_min": cfg.adx_min,
+                "separation_min": cfg.separation_min,
             })
-    return pd.DataFrame(rows)
+    return rows
+
+
+def run_tp_matrix(symbols, days):
+    """T17: H1 3x3, có đối chứng M15 và relaxation T18 đúng thứ tự."""
+    cfg = Config()
+    rows = _matrix_rows(symbols, days, cfg)
+
+    # T18: chỉ nới đúng hai ngưỡng đã duyệt, dựa trên ô đầy đủ/fixed_2r.
+    if rows[0]["n_trades"] < 150:
+        cfg = replace(cfg, adx_min=15)
+        rows = _matrix_rows(symbols, days, cfg)
+    if rows[0]["n_trades"] < 150:
+        cfg = replace(cfg, separation_min=0.25)
+        rows = _matrix_rows(symbols, days, cfg)
+
+    h1_report = pd.DataFrame(rows)
+    m15_cfg = replace(
+        Config.m15_entry(),
+        adx_min=cfg.adx_min,
+        separation_min=cfg.separation_min,
+    )
+    m15_report = pd.DataFrame(_matrix_rows(symbols, days, m15_cfg))
+    compare = m15_report.set_index(["config", "tp_mode"])
+
+    for column in [
+        "n_trades", "expectancy_r", "avg_loss_r", "cost_pct_of_r"
+    ]:
+        h1_report[f"m15_{column}"] = [
+            compare.loc[(row.config, row.tp_mode), column]
+            for row in h1_report.itertuples()
+        ]
+    h1_report["delta_expectancy_vs_m15"] = (
+        h1_report["expectancy_r"] - h1_report["m15_expectancy_r"]
+    ).round(3)
+    h1_report["delta_cost_pct_vs_m15"] = (
+        h1_report["cost_pct_of_r"] - h1_report["m15_cost_pct_of_r"]
+    ).round(2)
+    return h1_report
 
 
 def run_mfe_report(symbols, days):
@@ -184,6 +243,13 @@ def main():
         report = run_tp_matrix(args.symbols, args.days)
         print("Wilson CI = điểm % winrate vượt ngưỡng hòa vốn")
         print(report.to_string(index=False))
+        baseline = report.iloc[0]
+        print(
+            "T16/T18: "
+            f"{baseline['tf_entry']} entry, ADX>={baseline['adx_min']}, "
+            f"separation>{baseline['separation_min']}, "
+            f"n={int(baseline['n_trades'])}"
+        )
         verdict = (
             "TÌM THẤY EDGE"
             if report["stat_edge"].any()

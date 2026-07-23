@@ -13,14 +13,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from core.signals import Config, build_signals
-from core.mtf import resample_ohlcv, align_htf_to_ltf
+from core.mtf import align_htf_to_ltf, map_timeframes
 from core import indicators as ind
-from backtest.engine import run_backtest, Costs
+from backtest.engine import run_backtest
 from backtest.diagnostics import ablation_variants
 from backtest import metrics as mt
 from data.loader import fetch_ohlcv, TOP10
@@ -38,10 +37,9 @@ with st.sidebar:
     days = st.slider("Số ngày lịch sử", 90, 1095, 365, step=30)
 
     st.subheader("Tầng 1 — Nền")
-    use_d1 = st.checkbox("D1 trên 34-89", False)
-    use_h4 = st.checkbox("H4 trên 34-89", True)
+    use_base = st.checkbox("D1 trên 34-89", True)
 
-    st.subheader("Tầng 2 — Sóng chính H1")
+    st.subheader("Tầng 2 — Sóng chính H4")
     use_cross = st.checkbox("EMA34 cắt lên EMA89", True)
     cross_mode = st.selectbox("Chế độ EMA cross", ["state", "event"])
     cross_bars = st.slider("Cú cắt hiệu lực (nến)", 10, 300, 50)
@@ -54,7 +52,7 @@ with st.sidebar:
     st.subheader("Elliott / Fibo")
     use_fib = st.checkbox("Lọc vùng hồi Fibo", False)
     fib_lo, fib_hi = st.slider("Vùng Fibo", 0.0, 1.0, (0.30, 0.75))
-    swing_max_age = st.slider("Tuổi swing tối đa (H1)", 50, 500, 200, step=50)
+    swing_max_age = st.slider("Tuổi swing tối đa (H4)", 50, 500, 100, step=50)
 
     st.subheader("Price Action")
     require_pa = st.checkbox("Bắt buộc có PA", True)
@@ -70,14 +68,7 @@ with st.sidebar:
 @st.cache_data(ttl=3600)
 def load_data(sym, n_days):
     m15 = fetch_ohlcv(sym, "15m", n_days, verbose=False)
-    if m15.empty:
-        return None
-    return {
-        "m15": m15,
-        "h1": resample_ohlcv(m15, "1h"),
-        "h4": resample_ohlcv(m15, "4h"),
-        "d1": resample_ohlcv(m15, "1D"),
-    }
+    return None if m15.empty else m15
 
 
 def build_cfg():
@@ -92,8 +83,8 @@ def build_cfg():
         require_pa=require_pa,
         risk_pct=risk_pct,
         tp_mode=tp_mode,
-        use_d1_filter=use_d1,
-        use_h4_filter=use_h4,
+        use_d1_filter=False,
+        use_h4_filter=use_base,
         use_cross_filter=use_cross,
         use_adx_filter=use_adx,
         use_separation_filter=use_sep,
@@ -110,23 +101,38 @@ if run:
         st.error("Không tải được dữ liệu. Kiểm tra kết nối mạng / OKX API.")
         st.stop()
 
-    m15, h1, h4, d1 = data["m15"], data["h1"], data["h4"], data["d1"]
-    st.caption(f"{len(m15)} nến M15 | {m15.index[0].date()} → {m15.index[-1].date()}")
-
+    m15 = data
     cfg = build_cfg()
-    sig = build_signals(m15, h1, h4, d1, cfg)
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
+    st.caption(
+        f"{len(entry)} nến {cfg.tf_entry} | "
+        f"{entry.index[0].date()} → {entry.index[-1].date()} | "
+        f"mapping {cfg.tf_base}/{cfg.tf_main}/{cfg.tf_entry}"
+    )
+    sig = build_signals(entry, main, base, cfg)
 
-    h1_bands = ind.sonic_r_bands(h1)
-    trail = align_htf_to_ltf(h1_bands[["ema_fast_low"]], m15.index)["ema_fast_low"]
+    main_bands = ind.sonic_r_bands(main)
+    trail = align_htf_to_ltf(
+        main_bands[["ema_fast_low"]], entry.index
+    )["ema_fast_low"]
 
-    trades = run_backtest(sig, m15, symbol=symbol, tp_mode=tp_mode,
-                          risk_pct=risk_pct, trail_ema=trail)
+    trades = run_backtest(
+        sig,
+        entry,
+        symbol=symbol,
+        tp_mode=tp_mode,
+        risk_pct=risk_pct,
+        max_bars=cfg.max_bars,
+        trail_ema=trail,
+    )
 
     if trades.empty:
         st.warning("Không có lệnh nào. Thử nới lỏng filter.")
         st.stop()
 
-    rep = mt.full_report(trades, m15.index)
+    rep = mt.full_report(trades, entry.index)
     b, f = rep["basic"], rep["frequency"]
 
     # ---------------- KPI
@@ -199,10 +205,16 @@ if run:
 
             prog = st.progress(0)
             for i, (label, cfg_i) in enumerate(variants):
-                sig_i = build_signals(m15, h1, h4, d1, cfg_i)
-                tr_i = run_backtest(sig_i, m15, symbol=symbol,
-                                    tp_mode=tp_mode, risk_pct=risk_pct,
-                                    trail_ema=trail)
+                sig_i = build_signals(entry, main, base, cfg_i)
+                tr_i = run_backtest(
+                    sig_i,
+                    entry,
+                    symbol=symbol,
+                    tp_mode=tp_mode,
+                    risk_pct=risk_pct,
+                    max_bars=cfg_i.max_bars,
+                    trail_ema=trail,
+                )
                 if tr_i.empty:
                     rows.append({"config": label, "n_trades": 0})
                 else:
@@ -231,7 +243,7 @@ if run:
 
     with t5:
         n = st.slider("Số nến hiển thị", 200, 3000, 800)
-        view = m15.iloc[-n:]
+        view = entry.iloc[-n:]
         sig_v = sig.iloc[-n:]
 
         fig2 = go.Figure()

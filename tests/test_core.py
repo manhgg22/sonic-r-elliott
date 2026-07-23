@@ -16,7 +16,12 @@ import numpy as np
 import pandas as pd
 
 from core import indicators as ind
-from core.mtf import align_htf_to_ltf, verify_no_lookahead, resample_ohlcv
+from core.mtf import (
+    align_htf_to_ltf,
+    map_timeframes,
+    resample_ohlcv,
+    verify_no_lookahead,
+)
 from core.signals import Config, build_signals, dow_and_fib_state, main_wave_filters
 from backtest.diagnostics import ablation_variants, funnel
 from backtest.engine import Costs, run_backtest
@@ -95,6 +100,26 @@ def test_mtf_no_lookahead():
     )
 
 
+def test_default_mapping_has_no_lookahead():
+    """Cả hai nhánh D1→H1 và H4→H1 phải sạch."""
+    m15 = make_synthetic(120 * 96)
+    cfg = Config()
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
+    checks = {
+        "main→entry": verify_no_lookahead(
+            main, align_htf_to_ltf(main[["close"]], entry.index)
+        ),
+        "base→entry": verify_no_lookahead(
+            base, align_htf_to_ltf(base[["close"]], entry.index)
+        ),
+    }
+    assert all(report["clean"] for report in checks.values()), checks
+    assert all(report["violations"] == 0 for report in checks.values())
+    print("  [OK] D1→H1 và H4→H1: 0 vi phạm look-ahead")
+
+
 def test_mtf_value_is_previous_bar():
     """Kiểm tra cụ thể: giá trị ghép phải là nến H1 TRƯỚC ĐÓ."""
     m15 = make_synthetic(2000)
@@ -148,31 +173,29 @@ def test_swing_retrace_is_bounded():
     in_range = retrace.between(0, 1).mean()
     assert in_range >= 0.95
     assert dow_and_fib_state(h1, Config(swing_max_age=0))["swing_low"].isna().all()
-    sig = build_signals(
-        m15,
-        h1,
-        resample_ohlcv(m15, "4h"),
-        resample_ohlcv(m15, "1D"),
-        Config(),
+    cfg = Config()
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
     )
-    m15_in_range = sig["retrace_pct"].dropna().between(0, 1).mean()
-    assert m15_in_range >= 0.95
+    sig = build_signals(entry, main, base, cfg)
+    entry_in_range = sig["retrace_pct"].dropna().between(0, 1).mean()
+    assert entry_in_range >= 0.95
     print(
-        f"  [OK] retrace trong [0, 1]: H1 {in_range:.1%}, M15 {m15_in_range:.1%}"
+        f"  [OK] retrace trong [0, 1]: main {in_range:.1%}, "
+        f"entry {entry_in_range:.1%}"
     )
 
 
 def test_full_pipeline():
     m15 = make_synthetic(8000)
-    h1 = resample_ohlcv(m15, "1h")
-    h4 = resample_ohlcv(m15, "4h")
-    d1 = resample_ohlcv(m15, "1D")
-
     cfg = Config()
-    sig = build_signals(m15, h1, h4, d1, cfg)
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
+    sig = build_signals(entry, main, base, cfg)
 
     n_entries = int(sig["entry_signal"].sum())
-    days = (m15.index[-1] - m15.index[0]).days
+    days = (entry.index[-1] - entry.index[0]).days
 
     assert n_entries >= 0
     assert "sl" in sig.columns and "tp_2r" in sig.columns
@@ -202,6 +225,9 @@ def test_cross_mode_state_vs_event():
 
 def test_config_entry_defaults_and_sampling_preset():
     cfg = Config()
+    assert (cfg.tf_base, cfg.tf_main, cfg.tf_entry) == ("1D", "4H", "1H")
+    assert cfg.sl_lookback == 5 and cfg.max_bars == 150
+    assert cfg.swing_max_age == 100 and (cfg.zz_left, cfg.zz_right) == (5, 5)
     assert cfg.use_h4_filter and cfg.use_cross_filter and cfg.use_adx_filter
     assert cfg.use_separation_filter and cfg.use_dow_filter and cfg.require_pa
     assert not cfg.use_d1_filter and not cfg.use_fib_filter
@@ -219,13 +245,17 @@ def test_config_entry_defaults_and_sampling_preset():
         ]
     )
 
+    old = Config.m15_entry()
+    assert (old.tf_base, old.tf_main, old.tf_entry) == ("4H", "1H", "15m")
+    assert old.max_bars == 500 and old.swing_max_age == 200
+
     m15 = make_synthetic(90 * 96)
-    h1 = resample_ohlcv(m15, "1h")
-    h4 = resample_ohlcv(m15, "4h")
-    d1 = resample_ohlcv(m15, "1D")
-    default_sig = build_signals(m15, h1, h4, d1, cfg)
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
+    default_sig = build_signals(entry, main, base, cfg)
     default_funnel = funnel(default_sig)
-    loose = funnel(build_signals(m15, h1, h4, d1, sampling))
+    loose = funnel(build_signals(entry, main, base, sampling))
     assert "f_d1" not in default_sig.attrs["active_filters"]
     assert "f_fib" not in default_sig.attrs["active_filters"]
     assert set(
@@ -241,21 +271,50 @@ def test_config_entry_defaults_and_sampling_preset():
     ).all()
     assert set(loose.loc[loose["active"] == "OFF", "cumulative"]) == {"-"}
     assert default_funnel["solo_count"].equals(loose["solo_count"])
-    print("  [OK] Config H4/Dow/PA; D1/Fibo OFF và funnel vẫn đếm solo")
+    print("  [OK] Config D1/H4/H1 và preset M15 giữ đúng thông số")
+
+
+def test_m15_preset_regression():
+    """Refactor timeframe không được đổi tín hiệu M15 lịch sử."""
+    m15 = make_synthetic(90 * 96)
+    cfg = Config.m15_entry()
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
+    sig = build_signals(entry, main, base, cfg)
+    columns = ["entry_signal", "sl", "tp_2r", "tp_fib_1618", "tp_fib_2618"]
+    fingerprint = int(pd.util.hash_pandas_object(sig[columns], index=True).sum())
+    assert int(sig["entry_signal"].sum()) == 30
+    assert fingerprint == 17872205066520887617
+
+    main_bands = ind.sonic_r_bands(main)
+    trail = align_htf_to_ltf(
+        main_bands[["ema_fast_low"]], entry.index
+    )["ema_fast_low"]
+    trades = run_backtest(
+        sig,
+        entry,
+        costs=Costs(0, 0),
+        max_bars=cfg.max_bars,
+        trail_ema=trail,
+    )
+    assert len(trades) == 4
+    print("  [OK] Preset M15 giữ nguyên 30 tín hiệu và 4 giao dịch baseline")
 
 
 def test_fib_tp_is_independent_from_entry_filter():
     m15 = make_synthetic(90 * 96)
-    h1 = resample_ohlcv(m15, "1h")
-    h4 = resample_ohlcv(m15, "4h")
-    d1 = resample_ohlcv(m15, "1D")
-    sig = build_signals(m15, h1, h4, d1, Config(use_fib_filter=False))
+    cfg = Config(use_fib_filter=False)
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
+    sig = build_signals(entry, main, base, cfg)
     with_swing = sig["swing_low"].notna() & sig["swing_high"].notna()
     valid_tp = sig.loc[with_swing, ["tp_fib_1618", "tp_fib_2618"]].notna().all(axis=1)
     assert with_swing.any() and valid_tp.mean() >= 0.80
 
     custom = build_signals(
-        m15, h1, h4, d1, Config(use_fib_filter=False, tp_fib_1=1.5)
+        entry, main, base, Config(use_fib_filter=False, tp_fib_1=1.5)
     )
     expected = custom["low"] + 1.5 * (custom["swing_high"] - custom["swing_low"])
     assert np.allclose(
@@ -292,23 +351,22 @@ def test_wilson_edge_interval():
 
 def test_pa_pattern_subset():
     m15 = make_synthetic(90 * 96)
-    sig = build_signals(
-        m15,
-        resample_ohlcv(m15, "1h"),
-        resample_ohlcv(m15, "4h"),
-        resample_ohlcv(m15, "1D"),
-        Config(pa_patterns=("engulfing", "pinbar")),
+    cfg = Config(pa_patterns=("engulfing", "pinbar"))
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
     )
+    sig = build_signals(entry, main, base, cfg)
     assert sig["f_pa"].equals(sig[["pa_engulfing", "pa_pinbar"]].any(axis=1))
     print("  [OK] PA subset dùng đúng pattern được chỉ định")
 
 
 def test_filters_not_mutually_exclusive():
     m15 = make_synthetic(90 * 96)
-    h1 = resample_ohlcv(m15, "1h")
-    h4 = resample_ohlcv(m15, "4h")
-    d1 = resample_ohlcv(m15, "1D")
-    sig = build_signals(m15, h1, h4, d1, Config())
+    cfg = Config()
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
+    sig = build_signals(entry, main, base, cfg)
     filters = [
         "f_d1", "f_h4", "f_cross", "f_adx", "f_sep",
         "f_dow", "f_fib", "f_value_zone", "f_pa",
@@ -324,13 +382,14 @@ def test_filters_not_mutually_exclusive():
 
 def test_signal_frequency_in_range():
     m15 = make_synthetic(90 * 96)
-    h1 = resample_ohlcv(m15, "1h")
-    h4 = resample_ohlcv(m15, "4h")
-    d1 = resample_ohlcv(m15, "1D")
-    sig = build_signals(m15, h1, h4, d1, Config())
+    cfg = Config()
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
+    sig = build_signals(entry, main, base, cfg)
     per_day = sig["entry_signal"].sum() / 90
     median = sig.loc[sig["entry_signal"], "retrace_pct"].median()
-    assert 0.1 <= per_day <= 5.0
+    assert 0 < per_day <= 5.0
     print(f"  [OK] {per_day:.3f} tín hiệu/ngày, median retrace {median:.3f}")
 
 
@@ -417,6 +476,7 @@ if __name__ == "__main__":
 
     print("\n[2] Multi-timeframe (chống look-ahead)")
     test_mtf_no_lookahead()
+    test_default_mapping_has_no_lookahead()
     test_mtf_value_is_previous_bar()
     test_mtf_verifier_allows_equal_closes()
 
@@ -424,6 +484,7 @@ if __name__ == "__main__":
     sig = test_full_pipeline()
     test_cross_mode_state_vs_event()
     test_config_entry_defaults_and_sampling_preset()
+    test_m15_preset_regression()
     test_fib_tp_is_independent_from_entry_filter()
     test_ablation_variants()
     test_wilson_edge_interval()

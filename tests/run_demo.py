@@ -8,11 +8,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1]))
 sys.stdout.reconfigure(encoding="utf-8")
 
-import pandas as pd
-import numpy as np
-
 from core.signals import Config, build_signals
-from core.mtf import resample_ohlcv
+from core.mtf import align_htf_to_ltf, map_timeframes
 from core import indicators as ind
 from backtest.engine import run_backtest, Costs
 from backtest import metrics as mt
@@ -25,16 +22,15 @@ def main():
     print("=" * 70)
 
     m15 = make_synthetic(35000, seed=7)
-    h1 = resample_ohlcv(m15, "1h")
-    h4 = resample_ohlcv(m15, "4h")
-    d1 = resample_ohlcv(m15, "1D")
-
     days = (m15.index[-1] - m15.index[0]).days
     print(f"\nDữ liệu: {len(m15)} nến M15, {days} ngày")
 
     # --- Cấu hình gốc (chặt nhất)
     cfg = Config()
-    sig = build_signals(m15, h1, h4, d1, cfg)
+    entry, main, base = map_timeframes(
+        m15, cfg.tf_entry, cfg.tf_main, cfg.tf_base
+    )
+    sig = build_signals(entry, main, base, cfg)
     print(f"Cấu hình đầy đủ: {int(sig['entry_signal'].sum())} tín hiệu")
 
     # --- Nới lỏng để có đủ mẫu thống kê
@@ -44,7 +40,7 @@ def main():
         fib_lo=0.20,
         fib_hi=0.90,
     )
-    sig_r = build_signals(m15, h1, h4, d1, cfg_relaxed)
+    sig_r = build_signals(entry, main, base, cfg_relaxed)
     n_sig = int(sig_r["entry_signal"].sum())
     print(f"Cấu hình nới lỏng: {n_sig} tín hiệu "
           f"({n_sig/max(days,1):.2f} lệnh/ngày)")
@@ -53,11 +49,10 @@ def main():
         print("\nKhông đủ tín hiệu để chạy backtest có ý nghĩa.")
         return
 
-    # EMA34_low H1 cho trailing stop
-    h1_bands = ind.sonic_r_bands(h1)
-    from core.mtf import align_htf_to_ltf
+    # EMA34_low khung main cho trailing stop
+    main_bands = ind.sonic_r_bands(main)
     trail = align_htf_to_ltf(
-        h1_bands[["ema_fast_low"]], m15.index
+        main_bands[["ema_fast_low"]], entry.index
     )["ema_fast_low"]
 
     # --- So sánh 3 chế độ TP
@@ -68,8 +63,8 @@ def main():
     results = {}
     for mode in ["fixed_2r", "sr_level", "fib_extension"]:
         trades = run_backtest(
-            sig_r, m15, symbol="SYNTH", tp_mode=mode,
-            costs=Costs(), trail_ema=trail,
+            sig_r, entry, symbol="SYNTH", tp_mode=mode,
+            costs=Costs(), max_bars=cfg.max_bars, trail_ema=trail,
         )
         results[mode] = trades
 
@@ -101,7 +96,7 @@ def main():
     print(f"CHẨN ĐOÁN SÂU — chế độ {best}")
     print("=" * 70)
 
-    freq = mt.frequency_check(trades, m15.index)
+    freq = mt.frequency_check(trades, entry.index)
     print("\n[1] Tần suất giao dịch — kiểm chứng 'cả ngày 1-2 entry'")
     print(f"  Lệnh/ngày           : {freq['trades_per_day']}")
     print(f"  Lệnh/tháng          : {freq['trades_per_month']}")
