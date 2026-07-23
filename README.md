@@ -8,9 +8,15 @@ Bộ công cụ kiểm chứng hệ thống Sonic R (EMA 34/89) kết hợp Elli
 
 | Khung | Vai trò | Điều kiện |
 |---|---|---|
-| **D1 + H4** | Nền xu hướng | Giá trên cụm EMA 34–89 |
-| **H1** | Sóng chính | EMA34 cắt lên EMA89 + ADX + Dow HH/HL |
+| **D1 + H4** | Nền xu hướng tùy chọn | Giá trên cụm EMA 34–89 |
+| **H1** | Sóng chính | EMA34 trên EMA89 + ADX |
 | **M15** | Vào lệnh | Hồi về Value Zone + Price Action |
+
+Baseline lấy mẫu mặc định bật `cross(state) + ADX + Value Zone + PA`.
+D1, H4, separation, Dow và Fibo vẫn được tính nhưng mặc định tắt; bật lại
+trên dashboard để kiểm chứng từng giả thuyết. Baseline này là cấu hình tối
+thiểu đạt 115 lệnh BTC/USDT trong cửa sổ 365 ngày kiểm thử, không phải cấu
+hình có lợi nhuận: expectancy quan sát được là âm.
 
 **Thoát lệnh — 3 chế độ chạy song song để so sánh:**
 
@@ -46,7 +52,17 @@ python run_backtest.py --symbols BTC/USDT ETH/USDT --tp sr_level
 streamlit run dashboard/app.py
 ```
 
-**4. Pine Script:**
+**4. Chẩn đoán funnel và sensitivity sweep:**
+```bash
+python -m backtest.diagnostics --synthetic --days 90
+python -m backtest.diagnostics --symbol BTC/USDT --days 365
+python -m backtest.sweep --symbol BTC/USDT --days 365
+```
+Sweep luôn bật bộ filter strict và lưu CSV vào `results/`. Cấu hình chỉ được
+đánh dấu `recommended` khi có ít nhất 100 lệnh, đạt 0.3–2.0 lệnh/ngày và
+không nằm ở rìa lưới tham số.
+
+**5. Pine Script:**
 Mở `sonic_r_elliott.pine`, copy vào Pine Editor trên TradingView, Add to Chart.
 Bật alert "Sonic R BUY Setup" để nhận thông báo về điện thoại.
 
@@ -62,6 +78,8 @@ core/
 backtest/
   engine.py       Mô phỏng bar-by-bar, 3 chế độ TP, partial exit, trailing
   metrics.py      Winrate, PF, MFE/MAE, Monte Carlo, khoảng tin cậy
+  diagnostics.py  Funnel, marginal contribution, overlap, retrace distribution
+  sweep.py        Sensitivity grid, gate đủ mẫu và đánh dấu tham số rìa
 data/
   loader.py       ccxt → OKX, cache parquet
 dashboard/

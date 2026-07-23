@@ -54,6 +54,7 @@ def main():
 
     cfg = Config()
     all_trades = []
+    all_indices = []
 
     print("=" * 70)
     print(f"BACKTEST — {len(args.symbols)} coin, {args.days} ngày, TP={args.tp}")
@@ -76,6 +77,7 @@ def main():
               f"PF {m['profit_factor']} | exp {m['expectancy_r']}R | "
               f"DD {m['max_drawdown_pct']}%")
         all_trades.append(trades)
+        all_indices.append(idx)
 
     if not all_trades:
         print("\nKhông có kết quả.")
@@ -90,6 +92,11 @@ def main():
 
     m = mt.basic_metrics(combined)
     for k, v in m.items():
+        print(f"  {k:22s}: {v}")
+
+    combined_index = all_indices[0].append(all_indices[1:]).unique().sort_values()
+    print("\n  --- Tần suất")
+    for k, v in mt.frequency_check(combined, combined_index).items():
         print(f"  {k:22s}: {v}")
 
     print("\n  --- Sideway vs Trending")

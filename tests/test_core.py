@@ -6,6 +6,7 @@ Nếu test này fail, mọi kết quả backtest đều vô nghĩa.
 """
 
 import sys
+from itertools import combinations
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1]))
 sys.stdout.reconfigure(encoding="utf-8")
@@ -15,7 +16,7 @@ import pandas as pd
 
 from core import indicators as ind
 from core.mtf import align_htf_to_ltf, verify_no_lookahead, resample_ohlcv
-from core.signals import Config, build_signals
+from core.signals import Config, build_signals, main_wave_filters
 from backtest.engine import Costs, run_backtest
 from backtest.metrics import basic_metrics, frequency_check
 
@@ -161,6 +162,47 @@ def test_full_pipeline():
     return sig
 
 
+def test_cross_mode_state_vs_event():
+    h1 = resample_ohlcv(make_synthetic(90 * 96), "1h")
+    state = main_wave_filters(h1, Config(cross_mode="state"))["cross_fresh"]
+    event = main_wave_filters(h1, Config(cross_mode="event"))["cross_fresh"]
+    assert state.sum() > event.sum()
+    assert 0.40 <= state.mean() <= 0.60
+    assert int(event.sum()) == 222, "Nhánh event đã khác baseline cũ"
+    print(f"  [OK] Cross state {state.mean():.1%} > event {event.mean():.1%}")
+
+
+def test_filters_not_mutually_exclusive():
+    m15 = make_synthetic(90 * 96)
+    h1 = resample_ohlcv(m15, "1h")
+    h4 = resample_ohlcv(m15, "4h")
+    d1 = resample_ohlcv(m15, "1D")
+    sig = build_signals(m15, h1, h4, d1, Config())
+    filters = [
+        "f_d1", "f_h4", "f_cross", "f_adx", "f_sep",
+        "f_dow", "f_fib", "f_value_zone", "f_pa",
+    ]
+    empty = [
+        (a, b)
+        for a, b in combinations(filters, 2)
+        if not (sig[a] & sig[b]).any()
+    ]
+    assert not empty, f"Cặp filter loại trừ nhau: {empty}"
+    print("  [OK] Không cặp filter nào loại trừ nhau")
+
+
+def test_signal_frequency_in_range():
+    m15 = make_synthetic(90 * 96)
+    h1 = resample_ohlcv(m15, "1h")
+    h4 = resample_ohlcv(m15, "4h")
+    d1 = resample_ohlcv(m15, "1D")
+    sig = build_signals(m15, h1, h4, d1, Config())
+    per_day = sig["entry_signal"].sum() / 90
+    median = sig.loc[sig["entry_signal"], "retrace_pct"].median()
+    assert 0.1 <= per_day <= 5.0
+    print(f"  [OK] {per_day:.3f} tín hiệu/ngày, median retrace {median:.3f}")
+
+
 def test_backtest_closes_at_end():
     idx = pd.date_range("2024-01-01 23:45", periods=3, freq="15min", tz="UTC")
     m15 = pd.DataFrame(
@@ -213,6 +255,9 @@ if __name__ == "__main__":
 
     print("\n[3] Pipeline đầy đủ")
     sig = test_full_pipeline()
+    test_cross_mode_state_vs_event()
+    test_filters_not_mutually_exclusive()
+    test_signal_frequency_in_range()
 
     print("\n[4] Backtest engine")
     test_backtest_closes_at_end()

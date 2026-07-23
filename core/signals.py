@@ -7,7 +7,7 @@ Mỗi tầng lọc tương ứng trực tiếp với một câu trong phương p
   Tầng 2  "H1 EMA34 cắt lên EMA89"          -> sóng chính
           "sideway anh em cực kì dễ toang"  -> ADX + separation filter
           "dùng Dow"                        -> HH + HL
-          "sóng đẩy"                        -> Fibo 38.2-61.8%
+          "sóng đẩy"                        -> vùng hồi Fibo cấu hình được
   Tầng 3  "hồi về vùng giá trị ở TF nhỏ"    -> M15 chạm Value Zone
           "tín hiệu Price Action đẹp"       -> engulfing / pinbar / BOS
 
@@ -32,6 +32,7 @@ class Config:
     ema_slow: int = 89
 
     # Tầng 2 — sóng chính H1
+    cross_mode: str = "state"        # 'state' | 'event'
     cross_valid_bars: int = 50       # cú cắt còn hiệu lực bao lâu
     adx_period: int = 14
     adx_min: float = 20.0            # chống sideway
@@ -39,8 +40,8 @@ class Config:
     slope_lookback: int = 10
 
     # Elliott Tầng 1 — vùng hồi hợp lệ
-    fib_lo: float = 0.382
-    fib_hi: float = 0.618
+    fib_lo: float = 0.30
+    fib_hi: float = 0.75
 
     # ZigZag
     zz_left: int = 5
@@ -60,14 +61,15 @@ class Config:
     tp_mode: str = "fixed_2r"        # 'fixed_2r' | 'sr_level' | 'fib_extension'
     tp_r_multiple: float = 2.0
 
-    # Công tắc bật/tắt filter — dùng cho ablation test
-    use_d1_filter: bool = True
-    use_h4_filter: bool = True
+    # Baseline lấy mẫu: cross + ADX + Value Zone + PA.
+    # Các filter còn lại vẫn được tính và có thể bật để ablation/sweep.
+    use_d1_filter: bool = False
+    use_h4_filter: bool = False
     use_cross_filter: bool = True
     use_adx_filter: bool = True
-    use_separation_filter: bool = True
-    use_dow_filter: bool = True
-    use_fib_filter: bool = True
+    use_separation_filter: bool = False
+    use_dow_filter: bool = False
+    use_fib_filter: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -104,15 +106,19 @@ def main_wave_filters(df_h1: pd.DataFrame, cfg: Config) -> pd.DataFrame:
 
     # --- "EMA34 cắt lên EMA89 -> xu hướng tăng được xác nhận"
     above = bands["ema_fast_close"] > bands["ema_slow"]
-    crossed_up = above & (~above.shift(1, fill_value=False))
-    # Cú cắt còn hiệu lực trong N nến
-    bars_since = pd.Series(np.nan, index=df_h1.index)
-    last_cross = -10**9
-    for i, ts in enumerate(df_h1.index):
-        if crossed_up.iloc[i]:
-            last_cross = i
-        bars_since.iloc[i] = i - last_cross
-    out["cross_fresh"] = (bars_since <= cfg.cross_valid_bars) & above
+    if cfg.cross_mode == "state":
+        out["cross_fresh"] = above
+    elif cfg.cross_mode == "event":
+        crossed_up = above & (~above.shift(1, fill_value=False))
+        bars_since = pd.Series(np.nan, index=df_h1.index)
+        last_cross = -10**9
+        for i in range(len(df_h1)):
+            if crossed_up.iloc[i]:
+                last_cross = i
+            bars_since.iloc[i] = i - last_cross
+        out["cross_fresh"] = (bars_since <= cfg.cross_valid_bars) & above
+    else:
+        raise ValueError("cross_mode phải là 'state' hoặc 'event'")
 
     # --- "sideway anh em cực kì dễ toang" -> hai lớp chống sideway
     out["adx_ok"] = adx_h1 > cfg.adx_min
@@ -266,27 +272,37 @@ def build_signals(
 
     # --- Gộp theo công tắc bật/tắt
     conds = [sig["f_value_zone"]]
+    active_filters = ["f_value_zone"]
     if cfg.use_d1_filter:
         conds.append(sig["f_d1"])
+        active_filters.append("f_d1")
     if cfg.use_h4_filter:
         conds.append(sig["f_h4"])
+        active_filters.append("f_h4")
     if cfg.use_cross_filter:
         conds.append(sig["f_cross"])
+        active_filters.append("f_cross")
     if cfg.use_adx_filter:
         conds.append(sig["f_adx"])
+        active_filters.append("f_adx")
     if cfg.use_separation_filter:
         conds.append(sig["f_sep"])
+        active_filters.append("f_sep")
     if cfg.use_dow_filter:
         conds.append(sig["f_dow"])
+        active_filters.append("f_dow")
     if cfg.use_fib_filter:
         conds.append(sig["f_fib"])
+        active_filters.append("f_fib")
     if cfg.require_pa:
         conds.append(sig["f_pa"])
+        active_filters.append("f_pa")
 
     combined = conds[0]
     for c in conds[1:]:
         combined = combined & c
     sig["entry_signal"] = combined
+    sig.attrs["active_filters"] = active_filters
 
     # --- Mức SL/TP
     swing_low_m15 = m15["low"].rolling(cfg.sl_lookback).min()

@@ -30,17 +30,22 @@ tfBase2  = input.timeframe("240", "Nền 2",        group=grpTF)
 tfMain   = input.timeframe("60",  "Sóng chính",   group=grpTF)
 
 grpFilter = "Bộ lọc chống sideway"
+useD1       = input.bool(false, "Dùng nền D1",          group=grpFilter)
+useH4       = input.bool(false, "Dùng nền H4",          group=grpFilter)
 useADX      = input.bool(true,  "Dùng ADX",           group=grpFilter)
 adxLen      = input.int(14,     "ADX period",         group=grpFilter)
 adxMin      = input.float(20,   "ADX tối thiểu",      group=grpFilter)
-useSep      = input.bool(true,  "Dùng EMA separation", group=grpFilter)
+useSep      = input.bool(false, "Dùng EMA separation", group=grpFilter)
 sepMin      = input.float(0.5,  "Separation / ATR",   group=grpFilter)
+useDow      = input.bool(false, "Dùng Dow HH+HL",      group=grpFilter)
+crossMode   = input.string("State", "Chế độ EMA cross",
+                           options=["State", "Event"], group=grpFilter)
 crossBars   = input.int(50,     "Cú cắt hiệu lực (nến H1)", group=grpFilter)
 
 grpElliott = "Elliott / Fibo"
-useFib   = input.bool(true,  "Lọc vùng hồi Fibo",  group=grpElliott)
-fibLo    = input.float(0.382, "Fibo min",          group=grpElliott)
-fibHi    = input.float(0.618, "Fibo max",          group=grpElliott)
+useFib   = input.bool(false, "Lọc vùng hồi Fibo",  group=grpElliott)
+fibLo    = input.float(0.30, "Fibo min",           group=grpElliott)
+fibHi    = input.float(0.75, "Fibo max",           group=grpElliott)
 zzLen    = input.int(5,      "ZigZag pivot len",   group=grpElliott)
 
 grpPA = "Price Action"
@@ -108,11 +113,15 @@ m_crossUp = request.security(syminfo.tickerid, tfMain,
 
 // ----------------------------------------------------------------- FILTERS
 // Tầng 1 — nền
-f_d1 = baseTrendUp(d1c, d1eLow, d1eSlow)
-f_h4 = baseTrendUp(h4c, h4eLow, h4eSlow)
+d1_up = baseTrendUp(d1c, d1eLow, d1eSlow)
+h4_up = baseTrendUp(h4c, h4eLow, h4eSlow)
+f_d1 = not useD1 or d1_up
+f_h4 = not useH4 or h4_up
 
 // Tầng 2 — sóng chính
-f_cross = m_eFastC > m_eSlow and (na(m_crossUp) ? false : m_crossUp <= crossBars)
+f_cross = crossMode == "State"
+          ? m_eFastC > m_eSlow
+          : m_eFastC > m_eSlow and (na(m_crossUp) ? false : m_crossUp <= crossBars)
 f_adx   = not useADX or m_adx > adxMin
 separation = math.abs(m_eFastC - m_eSlow) / m_atr
 f_sep   = not useSep or separation > sepMin
@@ -131,8 +140,9 @@ if not na(pl)
     prevPL := lastPL
     lastPL := pl
 
-f_dow = not na(lastPH) and not na(prevPH) and not na(lastPL) and not na(prevPL)
-        and lastPH > prevPH and lastPL > prevPL
+dow_up = not na(lastPH) and not na(prevPH) and not na(lastPL) and not na(prevPL)
+         and lastPH > prevPH and lastPL > prevPL
+f_dow = not useDow or dow_up
 
 // Elliott Tầng 1 — pullback trong vùng Fibo hợp lệ
 swingRange = lastPH - lastPL
@@ -191,7 +201,7 @@ vzB = plot(showZone ? vzBot : na, "VZ Bot", color=color.new(color.blue, 70))
 fill(vzT, vzB, color=color.new(color.blue, 90), title="Value Zone")
 
 // Nền màu theo trạng thái nền
-bgcolor(f_d1 and f_h4 ? color.new(color.green, 95) : na, title="Nền uptrend")
+bgcolor(d1_up and h4_up ? color.new(color.green, 95) : na, title="Nền uptrend")
 
 // Marker tín hiệu
 plotshape(freshSignal, "BUY", shape.triangleup, location.belowbar,

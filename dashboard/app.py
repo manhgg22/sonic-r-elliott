@@ -37,21 +37,22 @@ with st.sidebar:
     days = st.slider("Số ngày lịch sử", 90, 1095, 365, step=30)
 
     st.subheader("Tầng 1 — Nền")
-    use_d1 = st.checkbox("D1 trên 34-89", True)
-    use_h4 = st.checkbox("H4 trên 34-89", True)
+    use_d1 = st.checkbox("D1 trên 34-89", False)
+    use_h4 = st.checkbox("H4 trên 34-89", False)
 
     st.subheader("Tầng 2 — Sóng chính H1")
     use_cross = st.checkbox("EMA34 cắt lên EMA89", True)
+    cross_mode = st.selectbox("Chế độ EMA cross", ["state", "event"])
     cross_bars = st.slider("Cú cắt hiệu lực (nến)", 10, 300, 50)
     use_adx = st.checkbox("ADX filter", True)
     adx_min = st.slider("ADX tối thiểu", 10.0, 35.0, 20.0)
-    use_sep = st.checkbox("EMA separation", True)
+    use_sep = st.checkbox("EMA separation", False)
     sep_min = st.slider("Separation / ATR", 0.0, 2.0, 0.5)
-    use_dow = st.checkbox("Dow HH+HL", True)
+    use_dow = st.checkbox("Dow HH+HL", False)
 
     st.subheader("Elliott / Fibo")
-    use_fib = st.checkbox("Lọc vùng hồi Fibo", True)
-    fib_lo, fib_hi = st.slider("Vùng Fibo", 0.0, 1.0, (0.382, 0.618))
+    use_fib = st.checkbox("Lọc vùng hồi Fibo", False)
+    fib_lo, fib_hi = st.slider("Vùng Fibo", 0.0, 1.0, (0.30, 0.75))
 
     st.subheader("Price Action")
     require_pa = st.checkbox("Bắt buộc có PA", True)
@@ -79,6 +80,7 @@ def load_data(sym, n_days):
 
 def build_cfg():
     return Config(
+        cross_mode=cross_mode,
         cross_valid_bars=cross_bars,
         adx_min=adx_min,
         separation_min=sep_min,
