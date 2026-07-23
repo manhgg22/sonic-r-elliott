@@ -8,6 +8,7 @@ Nếu test này fail, mọi kết quả backtest đều vô nghĩa.
 import sys
 from itertools import combinations
 from pathlib import Path
+from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).parents[1]))
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -19,7 +20,8 @@ from core.mtf import align_htf_to_ltf, verify_no_lookahead, resample_ohlcv
 from core.signals import Config, build_signals, dow_and_fib_state, main_wave_filters
 from backtest.diagnostics import ablation_variants, funnel
 from backtest.engine import Costs, run_backtest
-from backtest.metrics import basic_metrics, frequency_check
+from backtest.metrics import basic_metrics, frequency_check, wilson_edge_interval
+from data import loader
 
 
 def make_synthetic(n=6000, seed=42, start="2024-01-01"):
@@ -277,6 +279,30 @@ def test_ablation_variants():
     print("  [OK] Ablation đủ 9 cấu hình mới")
 
 
+def test_wilson_edge_interval():
+    trades = pd.DataFrame({
+        "pnl": [2.0] * 100 + [-1.0] * 100,
+        "r_multiple": [2.0] * 100 + [-1.0] * 100,
+    })
+    ci = wilson_edge_interval(trades)
+    assert np.isclose(ci["breakeven_winrate"], 33.33)
+    assert ci["wilson_ci_low"] > 0
+    print("  [OK] Wilson CI đo phần winrate vượt hòa vốn")
+
+
+def test_pa_pattern_subset():
+    m15 = make_synthetic(90 * 96)
+    sig = build_signals(
+        m15,
+        resample_ohlcv(m15, "1h"),
+        resample_ohlcv(m15, "4h"),
+        resample_ohlcv(m15, "1D"),
+        Config(pa_patterns=("engulfing", "pinbar")),
+    )
+    assert sig["f_pa"].equals(sig[["pa_engulfing", "pa_pinbar"]].any(axis=1))
+    print("  [OK] PA subset dùng đúng pattern được chỉ định")
+
+
 def test_filters_not_mutually_exclusive():
     m15 = make_synthetic(90 * 96)
     h1 = resample_ohlcv(m15, "1h")
@@ -342,6 +368,41 @@ def test_drawdown_includes_initial_balance():
     print("  [OK] Drawdown tính từ số dư ban đầu")
 
 
+def test_loader_keeps_cache_after_partial_download():
+    class FakeExchange:
+        rateLimit = 0
+        calls = 0
+
+        def milliseconds(self):
+            return 2_000_000_000
+
+        def fetch_ohlcv(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("rate limit")
+            return [[i, 1, 2, 0, 1, 1] for i in range(300)]
+
+    class FakeCcxt:
+        okx = staticmethod(lambda options: FakeExchange())
+
+    old_cache, old_ccxt = loader.CACHE_DIR, loader.ccxt
+    with TemporaryDirectory() as tmp:
+        try:
+            loader.CACHE_DIR = Path(tmp)
+            loader.ccxt = FakeCcxt()
+            cached = make_synthetic(10)
+            path = loader._cache_path("BTC/USDT", "15m", 1)
+            cached.to_parquet(path)
+            result = loader.fetch_ohlcv(
+                "BTC/USDT", "15m", 1, cache_max_age=0
+            )
+            assert result.equals(cached)
+            assert pd.read_parquet(path).equals(cached)
+        finally:
+            loader.CACHE_DIR, loader.ccxt = old_cache, old_ccxt
+    print("  [OK] Loader không ghi đè cache khi download lỗi giữa chừng")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("KIỂM CHỨNG CORE LOGIC")
@@ -365,12 +426,15 @@ if __name__ == "__main__":
     test_config_entry_defaults_and_sampling_preset()
     test_fib_tp_is_independent_from_entry_filter()
     test_ablation_variants()
+    test_wilson_edge_interval()
+    test_pa_pattern_subset()
     test_filters_not_mutually_exclusive()
     test_signal_frequency_in_range()
 
     print("\n[4] Backtest engine")
     test_backtest_closes_at_end()
     test_drawdown_includes_initial_balance()
+    test_loader_keeps_cache_after_partial_download()
 
     print("\n" + "=" * 60)
     print("TẤT CẢ TEST PASS")

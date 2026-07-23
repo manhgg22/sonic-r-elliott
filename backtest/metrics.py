@@ -209,6 +209,25 @@ def confidence_interval_winrate(trades: pd.DataFrame) -> dict:
     }
 
 
+def wilson_edge_interval(trades: pd.DataFrame) -> dict:
+    """Wilson 95% CI của winrate sau khi trừ winrate hòa vốn thực tế."""
+    if trades.empty:
+        return {}
+    wins = trades.loc[trades["pnl"] > 0, "r_multiple"]
+    losses = trades.loc[trades["pnl"] <= 0, "r_multiple"]
+    if wins.empty or losses.empty:
+        return {}
+    avg_win = wins.mean()
+    avg_loss = losses.mean()
+    breakeven = -avg_loss / (avg_win - avg_loss)
+    ci = confidence_interval_winrate(trades)
+    return {
+        "breakeven_winrate": round(100 * breakeven, 2),
+        "wilson_ci_low": round(ci["winrate_ci_low"] - 100 * breakeven, 2),
+        "wilson_ci_high": round(ci["winrate_ci_high"] - 100 * breakeven, 2),
+    }
+
+
 def full_report(trades: pd.DataFrame, m15_index: pd.DatetimeIndex,
                 initial_balance: float = 10000) -> dict:
     """Gộp tất cả."""

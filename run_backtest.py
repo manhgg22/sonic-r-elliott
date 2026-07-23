@@ -9,6 +9,7 @@ Dùng:
 
 import argparse
 import sys
+from datetime import timedelta
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.stdout.reconfigure(encoding="utf-8")
@@ -24,10 +25,18 @@ from backtest import metrics as mt
 from data.loader import fetch_ohlcv, TOP10, data_quality_check
 
 
-def run_one(symbol, days, cfg, tp_mode):
-    m15 = fetch_ohlcv(symbol, "15m", days, verbose=False)
-    if m15.empty or len(m15) < 5000:
+def run_one(symbol, days, cfg, tp_mode, cache_max_age=3600):
+    m15 = fetch_ohlcv(
+        symbol, "15m", days, verbose=False, cache_max_age=cache_max_age
+    )
+    if m15.empty:
         return None, None
+    latest_allowed = pd.Timestamp.now(tz="UTC") - timedelta(days=1)
+    if len(m15) < days * 96 * 0.9 or m15.index.max() < latest_allowed:
+        raise ValueError(
+            f"Dữ liệu {symbol} không đủ {days} ngày: "
+            f"{len(m15)} nến, kết thúc {m15.index.max()}"
+        )
     quality = data_quality_check(m15, "15m")
     if not quality["ok"]:
         raise ValueError(f"Dữ liệu không hợp lệ: {quality}")
@@ -45,21 +54,27 @@ def run_one(symbol, days, cfg, tp_mode):
     return trades, m15.index
 
 
+def run_universe(symbols, days, cfg, tp_mode):
+    all_trades = []
+    for symbol in symbols:
+        trades, _ = run_one(symbol, days, cfg, tp_mode, cache_max_age=None)
+        if trades is None:
+            raise RuntimeError(f"Thiếu dữ liệu đầy đủ cho {symbol}")
+        if not trades.empty:
+            all_trades.append(trades)
+    if not all_trades:
+        return pd.DataFrame()
+    return (
+        pd.concat(all_trades, ignore_index=True)
+        .sort_values("entry_time")
+        .reset_index(drop=True)
+    )
+
+
 def run_ablation(symbols, days, cfg, tp_mode):
     rows = []
     for label, variant in ablation_variants(cfg):
-        all_trades = []
-        for symbol in symbols:
-            trades, _ = run_one(symbol, days, variant, tp_mode)
-            if trades is not None and not trades.empty:
-                all_trades.append(trades)
-        combined = (
-            pd.concat(all_trades, ignore_index=True)
-            .sort_values("entry_time")
-            .reset_index(drop=True)
-            if all_trades
-            else pd.DataFrame()
-        )
+        combined = run_universe(symbols, days, variant, tp_mode)
         metrics = mt.basic_metrics(combined)
         rows.append(
             {
@@ -73,13 +88,87 @@ def run_ablation(symbols, days, cfg, tp_mode):
     return pd.DataFrame(rows)
 
 
+def run_tp_matrix(symbols, days):
+    rows = []
+    configs = [
+        ("Đầy đủ mới", Config()),
+        ("Bỏ PA", Config(require_pa=False)),
+        ("Thêm Fibo", Config(use_fib_filter=True)),
+    ]
+    for config_name, cfg in configs:
+        for tp_mode in ["fixed_2r", "sr_level", "fib_extension"]:
+            trades = run_universe(symbols, days, cfg, tp_mode)
+            metrics = mt.basic_metrics(trades)
+            edge_ci = mt.wilson_edge_interval(trades)
+            expectancy = metrics.get("expectancy_r")
+            ci_low = edge_ci.get("wilson_ci_low")
+            rows.append({
+                "config": config_name,
+                "tp_mode": tp_mode,
+                "n_trades": metrics["n_trades"],
+                "winrate": metrics.get("winrate"),
+                "wilson_ci_low": ci_low,
+                "wilson_ci_high": edge_ci.get("wilson_ci_high"),
+                "expectancy_r": expectancy,
+                "max_dd": metrics.get("max_drawdown_pct"),
+                "avg_win_r": metrics.get("avg_win_r"),
+                "avg_loss_r": metrics.get("avg_loss_r"),
+                "profit_factor": metrics.get("profit_factor"),
+                "expectancy_positive": bool(expectancy is not None and expectancy > 0),
+                "ci_positive": bool(ci_low is not None and ci_low > 0),
+                "stat_edge": bool(
+                    metrics["n_trades"] >= 150
+                    and expectancy is not None and expectancy > 0
+                    and ci_low is not None and ci_low > 0
+                ),
+            })
+    return pd.DataFrame(rows)
+
+
+def run_mfe_report(symbols, days):
+    trades = run_universe(symbols, days, Config(), "fixed_2r")
+    report = mt.mfe_mae_analysis(trades)
+    avg_mfe = report["avg_mfe_winners"]
+    if report["pct_reached_3r"] > 25 or avg_mfe > 2.4:
+        conclusion = "TP hiện tại quá sớm."
+    elif avg_mfe < 1.8:
+        conclusion = "TP hiện tại quá muộn."
+    else:
+        conclusion = "TP hiện tại vừa."
+    return report, conclusion
+
+
+def run_pa_report(symbols, days):
+    baseline = run_universe(symbols, days, Config(), "fixed_2r")
+    breakdown = mt.pa_breakdown(baseline)
+    rows = []
+    configs = [
+        ("Engulfing + pinbar", Config(pa_patterns=("engulfing", "pinbar"))),
+        ("Chỉ engulfing", Config(pa_patterns=("engulfing",))),
+        ("Không PA", Config(require_pa=False)),
+    ]
+    for label, cfg in configs:
+        metrics = mt.basic_metrics(run_universe(symbols, days, cfg, "fixed_2r"))
+        rows.append({
+            "config": label,
+            "n_trades": metrics["n_trades"],
+            "winrate": metrics.get("winrate"),
+            "expectancy_r": metrics.get("expectancy_r"),
+        })
+    return breakdown, pd.DataFrame(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=365)
     ap.add_argument("--symbols", nargs="+", default=TOP10)
     ap.add_argument("--tp", default="fixed_2r",
                     choices=["fixed_2r", "sr_level", "fib_extension"])
-    ap.add_argument("--ablation", action="store_true")
+    reports = ap.add_mutually_exclusive_group()
+    reports.add_argument("--ablation", action="store_true")
+    reports.add_argument("--tp-matrix", action="store_true")
+    reports.add_argument("--mfe-report", action="store_true")
+    reports.add_argument("--pa-breakdown", action="store_true")
     args = ap.parse_args()
 
     cfg = Config()
@@ -89,6 +178,44 @@ def main():
         out = Path("results")
         out.mkdir(exist_ok=True)
         report.to_csv(out / f"ablation_{args.days}d.csv", index=False)
+        return
+
+    if args.tp_matrix:
+        report = run_tp_matrix(args.symbols, args.days)
+        print("Wilson CI = điểm % winrate vượt ngưỡng hòa vốn")
+        print(report.to_string(index=False))
+        verdict = (
+            "TÌM THẤY EDGE"
+            if report["stat_edge"].any()
+            else "KHÔNG CÓ Ô NÀO ĐẠT EDGE CÓ Ý NGHĨA THỐNG KÊ"
+        )
+        print(f"KẾT LUẬN: {verdict}")
+        out = Path("results")
+        out.mkdir(exist_ok=True)
+        report.to_csv(out / f"tp_matrix_{args.days}d.csv", index=False)
+        return
+
+    if args.mfe_report:
+        report, conclusion = run_mfe_report(args.symbols, args.days)
+        for key in [
+            "avg_mfe_winners", "pct_reached_2r", "pct_reached_3r",
+            "pct_reached_5r", "avg_mae_winners",
+        ]:
+            print(f"{key:20s}: {report[key]}")
+        print(f"KẾT LUẬN: {conclusion}")
+        return
+
+    if args.pa_breakdown:
+        breakdown, report = run_pa_report(args.symbols, args.days)
+        print("PA BREAKDOWN")
+        print(breakdown.to_string(index=False))
+        print("\nPA CONFIG TEST")
+        print(report.to_string(index=False))
+        worst = breakdown.sort_values("expectancy_r").iloc[0]
+        print(
+            f"KẾT LUẬN: {worst['pa_type']} kéo nhóm xuống mạnh nhất "
+            f"({worst['expectancy_r']:+.3f}R)."
+        )
         return
 
     all_trades = []

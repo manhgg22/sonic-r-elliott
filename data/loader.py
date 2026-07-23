@@ -45,18 +45,23 @@ def fetch_ohlcv(
     exchange_id: str = "okx",
     use_cache: bool = True,
     verbose: bool = True,
+    cache_max_age: float | None = 3600,
 ) -> pd.DataFrame:
     """
     Tải OHLCV, phân trang tự động, cache ra parquet.
 
     Args:
         since_days: số ngày lịch sử. 1095 = 3 năm.
+        cache_max_age: tuổi cache tối đa theo giây; ``None`` dùng snapshot hiện có.
     """
     path = _cache_path(symbol, timeframe, since_days)
     if (
         use_cache
         and path.exists()
-        and time.time() - path.stat().st_mtime < 3600
+        and (
+            cache_max_age is None
+            or time.time() - path.stat().st_mtime < cache_max_age
+        )
     ):
         df = pd.read_parquet(path)
         if verbose:
@@ -71,6 +76,7 @@ def fetch_ohlcv(
 
     since = ex.milliseconds() - since_days * 24 * 60 * 60 * 1000
     all_rows = []
+    fetch_error = None
     limit = 300  # OKX giới hạn
 
     while True:
@@ -78,6 +84,7 @@ def fetch_ohlcv(
             batch = ex.fetch_ohlcv(symbol, tf, since=since, limit=limit)
         except Exception as e:
             print(f"  [lỗi] {symbol} {timeframe}: {e}")
+            fetch_error = e
             break
 
         if not batch:
@@ -92,6 +99,12 @@ def fetch_ohlcv(
             break
 
         time.sleep(ex.rateLimit / 1000)
+
+    if fetch_error is not None:
+        if use_cache and path.exists():
+            print(f"  [cache cũ] {symbol} {timeframe}: giữ dữ liệu trước lỗi tải")
+            return pd.read_parquet(path)
+        return pd.DataFrame()
 
     if not all_rows:
         return pd.DataFrame()

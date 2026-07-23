@@ -59,6 +59,9 @@ python -m backtest.diagnostics --symbol BTC/USDT --days 365
 python -m backtest.diagnostics --synthetic --days 90 --baseline-sampling
 python -m backtest.sweep --symbol BTC/USDT --days 365
 python run_backtest.py --days 365 --ablation
+python run_backtest.py --days 365 --tp-matrix
+python run_backtest.py --days 365 --mfe-report
+python run_backtest.py --days 365 --pa-breakdown
 ```
 Sweep luôn bật bộ filter strict và lưu CSV vào `results/`. Cấu hình chỉ được
 đánh dấu `recommended` khi có ít nhất 100 lệnh, đạt 0.3–2.0 lệnh/ngày và
@@ -139,6 +142,44 @@ chi phí có thể ăn phần lớn edge. Engine tự bỏ qua lệnh có SL < 0
 
 Đây là kết quả hợp lệ và có giá trị. Công cụ này tồn tại để biết sự thật
 trước khi vào tiền thật, không phải để xác nhận niềm tin có sẵn.
+
+---
+
+## Kết luận edge — 2026-07-23
+
+**Không tìm thấy edge có ý nghĩa thống kê trong 9 cấu hình đã định trước.**
+Kết luận áp dụng cho chiến lược BUY hiện tại trên top-10 universe, dữ liệu OKX
+M15 và chi phí mặc định; không phải tuyên bố về mọi chiến lược có thể tồn tại.
+
+Wilson CI dưới đây là khoảng tin cậy 95% của **winrate vượt ngưỡng hòa vốn**
+(Wilson winrate trừ breakeven theo `avg_win_r`/`avg_loss_r`). Edge chỉ được
+chấp nhận khi `expectancy_r > 0`, có ít nhất 150 trade và `CI_low > 0`.
+
+| Config | TP | Trades 3 năm | Expectancy | Wilson edge CI |
+|---|---|---:|---:|---:|
+| Đầy đủ mới | fixed 2R | 998 | −0.042R | [−4.39; +1.56] |
+| Đầy đủ mới | SR level | 2,624 | −0.085R | [−8.24; −5.17] |
+| Đầy đủ mới | Fibo extension | 771 | +0.021R | [−2.55; +3.86] |
+| Bỏ PA | fixed 2R | 1,099 | −0.035R | [−4.03; +1.66] |
+| Bỏ PA | SR level | 3,630 | −0.071R | [−6.95; −4.40] |
+| Bỏ PA | Fibo extension | 832 | −0.011R | [−3.29; +2.89] |
+| Thêm Fibo entry | fixed 2R | 816 | −0.029R | [−4.25; +2.33] |
+| Thêm Fibo entry | SR level | 1,887 | −0.076R | [−7.88; −4.32] |
+| Thêm Fibo entry | Fibo extension | 631 | +0.024R | [−2.76; +4.24] |
+
+Kiểm định 365 ngày cũng chỉ có một ô dương cô lập: đầy đủ mới × Fibo
+extension đạt `+0.018R` với 167 trade nhưng CI `[−5.94; +7.82]` chứa 0; hai ô
+lân cận cùng TP đều âm. Kéo dài lên 3 năm không làm CI loại được 0.
+
+- MFE/MAE 3 năm: winner đạt MFE trung bình 2.18R, chỉ 1.5% trade đạt 3R,
+  MAE winner −0.44R. TP 2R là vừa và SL không quá sát.
+- PA 3 năm: BOS tệ nhất (−0.129R), nhưng bỏ BOS vẫn −0.049R; chỉ engulfing
+  −0.093R; không PA −0.035R. Không có một pattern đơn lẻ che giấu edge.
+- Test multi-timeframe ghi nhận 0 vi phạm look-ahead.
+
+**Quyết định:** không giao dịch hệ thống này bằng tiền thật ở trạng thái hiện
+tại. Chỉ mở lại đánh giá khi có giả thuyết chiến lược mới được xác định trước,
+không tiếp tục chỉnh tham số trên cùng mẫu dữ liệu.
 
 ---
 

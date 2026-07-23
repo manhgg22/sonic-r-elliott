@@ -48,6 +48,7 @@ class Config:
     # Tầng 3 — vào lệnh M15
     value_zone_source: str = "h1"    # 'h1' hoặc 'm15'
     require_pa: bool = True
+    pa_patterns: tuple[str, ...] = ("engulfing", "pinbar", "bos")
 
     # Risk
     atr_period: int = 14
@@ -291,7 +292,9 @@ def build_signals(
     sig["pa_engulfing"] = pa["engulfing"].fillna(False)
     sig["pa_pinbar"] = pa["pinbar"].fillna(False)
     sig["pa_bos"] = pa["bos"].fillna(False)
-    sig["f_pa"] = pa["any_pa"].fillna(False)
+    sig["f_pa"] = sig[
+        [f"pa_{pattern}" for pattern in cfg.pa_patterns]
+    ].any(axis=1)
 
     # --- Gộp theo công tắc bật/tắt
     conds = [sig["f_value_zone"]]
