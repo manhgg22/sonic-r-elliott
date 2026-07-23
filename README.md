@@ -63,6 +63,7 @@ python run_backtest.py --days 1095 --tp-matrix
 python run_backtest.py --days 1095 --mfe-report
 python run_backtest.py --days 365 --pa-breakdown
 python run_backtest.py --days 1095 --regime-report
+python run_backtest.py --pure-sonic --exchange binance --top 50 --days 1095
 ```
 Sweep luôn bật bộ filter strict và lưu CSV vào `results/`. Cấu hình chỉ được
 đánh dấu `recommended` khi có ít nhất 100 lệnh, đạt 0.3–2.0 lệnh/ngày và
@@ -80,6 +81,7 @@ Bật alert "Sonic R BUY Setup" để nhận thông báo về điện thoại.
 core/
   indicators.py   EMA, ATR, ADX, ZigZag (có độ trễ đúng), Fibonacci, Price Action
   mtf.py          Multi-timeframe alignment — CHỐNG LOOK-AHEAD
+  pure_sonic.py   Bản thuần: trend, breakout, Value Zone, PA
   signals.py      3 tầng lọc, mỗi filter bật/tắt độc lập
 backtest/
   engine.py       Mô phỏng bar-by-bar, 3 chế độ TP, partial exit, trailing
@@ -235,6 +237,66 @@ nhóm kết quả (9 cặp định nghĩa × TP); `EDGE` chỉ đúng khi `n >= 
 
 **Quyết định cuối giai đoạn backtest:** chưa có bằng chứng thống kê để giao
 dịch hệ thống bằng tiền thật. Dừng tinh chỉnh trên tập dữ liệu này.
+
+---
+
+## Sonic R thuần — Binance TOP50, không phí, 2026-07-23
+
+Giả thuyết kiểm tra: bảy filter cũ làm entry quá muộn. Bản thuần chỉ dùng đúng
+bốn điều kiện: trend EMA34/89, breakout 20 nến còn hiệu lực 30 nến, Value Zone
+và engulfing/pinbar. Dữ liệu là top 50 cặp USDT theo volume Binance tại thời
+điểm chạy, tối đa 1.095 ngày; stablecoin và leveraged token đã bị loại.
+
+Theo yêu cầu, **toàn bộ bảng này không tính fee hoặc slippage**. Max DD dùng
+vốn gộp 500.000 USD (10.000 USD cấp độc lập cho mỗi coin), không phải chia PnL
+của 50 coin cho một tài khoản 10.000 USD.
+
+### Ba chế độ TP
+
+| TP | Trades | WR | Wilson edge CI | Exp R | PF | Max DD | Avg win/loss R | Trades/ngày | MFE winner | Chạm 2R / 3R | Stat edge |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| Fixed 2R | 10.010 | 33.27% | [−1.54; +0.31] | −0.018 | 0.978 | 9.41% | +1.932 / −0.990 | 9.142 | 2.28R | 31.5% / 1.7% | Không |
+| SR level | 25.228 | 76.67% | [−1.05; 0.00] | −0.007 | 0.975 | 5.03% | +0.295 / −0.999 | 23.039 | 0.44R | 0.9% / 0.2% | Không |
+| Fibo extension | 7.582 | 20.84% | [+0.21; +2.04] | +0.056 | 1.101 | 6.36% | +4.043 / −0.994 | 6.924 | 8.38R | 31.9% / 23.2% | **Có** |
+
+### Ablation trên Fibo extension
+
+| Cấu hình | Trades | Exp R | Wilson edge CI | PF | Max DD | MFE winner | Chạm 3R | Stat edge |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| Đầy đủ 4 bước | 7.582 | +0.056 | [+0.21; +2.04] | 1.101 | 6.36% | 8.38R | 23.2% | Có |
+| Bỏ breakout | 8.848 | +0.064 | [+0.41; +2.09] | 1.113 | 6.25% | 8.75R | 23.6% | Có |
+| Bỏ Price Action | 9.233 | +0.067 | [+0.49; +2.14] | 1.099 | 7.84% | 8.57R | 23.1% | Có |
+| Chỉ trend + Value Zone | 10.465 | +0.064 | [+0.48; +2.03] | 1.089 | 8.82% | 8.63R | 23.5% | Có |
+
+### Đối chứng entry với cùng fixed 2R
+
+| Hệ thống | Trades | Exp R | MFE winner | Chạm 3R | Max DD |
+|---|---:|---:|---:|---:|---:|
+| Sonic R thuần | 10.010 | −0.018 | 2.28R | 1.7% | 9.41% |
+| Hệ thống 7-filter | 2.936 | +0.035 | 2.21R | 1.5% | 2.49% |
+
+**Kết luận:**
+
+- Bản thuần **không tốt hơn** 7-filter khi dùng cùng fixed 2R: expectancy thấp
+  hơn và MFE winner chỉ tăng 0.07R, không phải cải thiện rõ rệt.
+- Fibo extension là chế độ duy nhất đạt `stat_edge`. Vì fixed 2R và SR đều âm,
+  phát hiện này gắn với cách thoát Fibo, không chứng minh bốn filter entry tạo edge.
+- Breakout và Price Action không đóng góp dương: bỏ từng bước hoặc bỏ cả hai
+  đều làm expectancy tăng. Thành phần có giá trị trong mẫu này là trend +
+  Value Zone kết hợp Fibo exit.
+- Không tham số nào được sweep hoặc chỉnh sau khi thấy kết quả.
+- Universe có 3.394.156 nến M15; 25/50 coin đủ ít nhất 90% cửa sổ ba năm,
+  coin còn lại dùng lịch sử thật từ ngày niêm yết. Việc chọn top volume hôm nay
+  tạo survivorship/listing bias, và kết quả không phí không đại diện PnL thực tế.
+- Test Pure Sonic kiểm tra main→entry `0/508` vi phạm look-ahead và xác nhận
+  chỉ tồn tại bốn cột `f_trend`, `f_breakout`, `f_value_zone`, `f_pa`.
+
+Snapshot universe: `AAVE`, `ADA`, `AERO`, `AVAX`, `BANK`, `BNB`, `BTC`, `DEXE`,
+`DOGE`, `ENA`, `ERA`, `ETH`, `GRAM`, `HBAR`, `KAITO`, `KITE`, `LINK`, `LISTA`,
+`LTC`, `MIRA`, `MUB`, `NEAR`, `ONDO`, `OPN`, `PAXG`, `PEPE`, `PUMP`, `RE`,
+`RIF`, `SNDKB`, `SOL`, `SPCXB`, `SUI`, `SYN`, `TAO`, `TON`, `TRUMP`, `TRX`,
+`U`, `UNI`, `UTK`, `VANA`, `WLD`, `WLFI`, `XAUT`, `XLM`, `XRP`, `ZAMA`,
+`ZEC`, `币安人生` — tất cả ghép `/USDT`.
 
 ---
 

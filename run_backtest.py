@@ -9,6 +9,7 @@ Dùng:
 
 import argparse
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -18,9 +19,15 @@ sys.stdout.reconfigure(encoding="utf-8")
 import pandas as pd
 
 from core.signals import Config, build_signals
-from core.mtf import align_htf_to_ltf, map_timeframes, verify_no_lookahead
+from core.mtf import (
+    align_htf_to_ltf,
+    map_timeframes,
+    resample_ohlcv,
+    verify_no_lookahead,
+)
+from core.pure_sonic import PureSonicConfig, build_pure_signals
 from core import indicators as ind
-from backtest.engine import run_backtest
+from backtest.engine import Costs, run_backtest
 from backtest.diagnostics import ablation_variants
 from backtest import metrics as mt
 from backtest.regime import (
@@ -29,7 +36,12 @@ from backtest.regime import (
     regime_btc_quarterly,
     tag_trades_with_regime,
 )
-from data.loader import fetch_ohlcv, TOP10, data_quality_check
+from data.loader import (
+    fetch_ohlcv,
+    top_usdt_symbols,
+    TOP10,
+    data_quality_check,
+)
 
 
 def run_one(symbol, days, cfg, tp_mode, cache_max_age=3600):
@@ -295,10 +307,214 @@ def run_regime_report(symbols, days):
     return pd.DataFrame(rows), checks
 
 
+def _combine_trades(parts):
+    if not parts:
+        return pd.DataFrame()
+    return (
+        pd.concat(parts, ignore_index=True)
+        .sort_values("entry_time")
+        .reset_index(drop=True)
+    )
+
+
+def _pure_metrics(trades, days, n_symbols):
+    metrics = mt.basic_metrics(trades, initial_balance=10000 * n_symbols)
+    ci = mt.wilson_edge_interval(trades)
+    mfe = mt.mfe_mae_analysis(trades)
+    n_trades = metrics["n_trades"]
+    expectancy = metrics.get("expectancy_r")
+    ci_low = ci.get("wilson_ci_low")
+    return {
+        "n_trades": n_trades,
+        "winrate": metrics.get("winrate"),
+        "wilson_ci_low": ci_low,
+        "wilson_ci_high": ci.get("wilson_ci_high"),
+        "expectancy_r": expectancy,
+        "profit_factor": metrics.get("profit_factor"),
+        "max_dd": metrics.get("max_drawdown_pct"),
+        "avg_win_r": metrics.get("avg_win_r"),
+        "avg_loss_r": metrics.get("avg_loss_r"),
+        "trades_per_day": round(n_trades / max(days, 1), 3),
+        "avg_mfe_winners": mfe.get("avg_mfe_winners"),
+        "pct_reached_2r": mfe.get("pct_reached_2r"),
+        "pct_reached_3r": mfe.get("pct_reached_3r"),
+        "stat_edge": bool(
+            n_trades >= 150
+            and expectancy is not None and expectancy > 0
+            and ci_low is not None and ci_low > 0
+        ),
+    }
+
+
+def _cache_universe(symbols, days, exchange_id):
+    """Tải song song rồi bỏ DataFrame khỏi RAM; các bước sau đọc cache."""
+    def cache_one(symbol):
+        data = fetch_ohlcv(
+            symbol,
+            "15m",
+            days,
+            exchange_id=exchange_id,
+            cache_max_age=None,
+            verbose=False,
+        )
+        return symbol, len(data)
+
+    failed = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(cache_one, symbol) for symbol in symbols]
+        for done, future in enumerate(as_completed(futures), 1):
+            symbol, bars = future.result()
+            if bars == 0:
+                failed.append(symbol)
+            if done % 5 == 0 or done == len(symbols):
+                print(f"  cache {exchange_id}: {done}/{len(symbols)}")
+
+    for symbol in failed:
+        _, bars = cache_one(symbol)
+        if bars == 0:
+            raise RuntimeError(f"Không tải được dữ liệu Binance cho {symbol}")
+
+
+def _load_entry_main(symbol, days, exchange_id):
+    entry = fetch_ohlcv(
+        symbol,
+        "15m",
+        days,
+        exchange_id=exchange_id,
+        cache_max_age=None,
+        verbose=False,
+    )
+    if entry.empty:
+        raise RuntimeError(f"Không có dữ liệu {symbol}")
+    quality = data_quality_check(entry, "15m")
+    if not quality["ok"]:
+        raise RuntimeError(f"Dữ liệu {symbol} không hợp lệ: {quality}")
+    return entry, resample_ohlcv(entry, "1h")
+
+
+def _run_pure_universe(symbols, days, exchange_id, cfg, tp_modes):
+    parts = {tp_mode: [] for tp_mode in tp_modes}
+    for symbol in symbols:
+        entry, main = _load_entry_main(symbol, days, exchange_id)
+        sig = build_pure_signals(entry, main, cfg)
+        main_bands = ind.sonic_r_bands(main, cfg.ema_fast, cfg.ema_slow)
+        trail = align_htf_to_ltf(
+            main_bands[["ema_fast_low"]], entry.index
+        )["ema_fast_low"]
+        for tp_mode in tp_modes:
+            trades = run_backtest(
+                sig,
+                entry,
+                symbol=symbol,
+                tp_mode=tp_mode,
+                costs=Costs(0, 0),
+                max_bars=500,
+                trail_ema=trail,
+            )
+            if not trades.empty:
+                parts[tp_mode].append(trades)
+    return {mode: _combine_trades(items) for mode, items in parts.items()}
+
+
+def _run_existing_binance(symbols, days, exchange_id, tp_mode):
+    parts = []
+    cfg = Config.m15_entry()
+    for symbol in symbols:
+        entry, main = _load_entry_main(symbol, days, exchange_id)
+        base = resample_ohlcv(entry, "4h")
+        sig = build_signals(entry, main, base, cfg)
+        main_bands = ind.sonic_r_bands(main)
+        trail = align_htf_to_ltf(
+            main_bands[["ema_fast_low"]], entry.index
+        )["ema_fast_low"]
+        trades = run_backtest(
+            sig,
+            entry,
+            symbol=symbol,
+            tp_mode=tp_mode,
+            costs=Costs(0, 0),
+            max_bars=cfg.max_bars,
+            trail_ema=trail,
+        )
+        if not trades.empty:
+            parts.append(trades)
+    return _combine_trades(parts)
+
+
+def run_pure_sonic_report(symbols, days, exchange_id):
+    """Ba TP, bốn ablation và đối chứng 7-filter — đều không phí."""
+    _cache_universe(symbols, days, exchange_id)
+    tp_modes = ["fixed_2r", "sr_level", "fib_extension"]
+    full_cfg = PureSonicConfig()
+    pure_trades = _run_pure_universe(
+        symbols, days, exchange_id, full_cfg, tp_modes
+    )
+
+    tp_rows = []
+    for tp_mode, trades in pure_trades.items():
+        tp_rows.append({
+            "tp_mode": tp_mode,
+            **_pure_metrics(trades, days, len(symbols)),
+        })
+    tp_report = pd.DataFrame(tp_rows)
+    best_tp = tp_report.sort_values(
+        ["expectancy_r", "n_trades"], ascending=False
+    ).iloc[0]["tp_mode"]
+
+    ablation_rows = [{
+        "config": "Đầy đủ 4 bước",
+        **_pure_metrics(pure_trades[best_tp], days, len(symbols)),
+    }]
+    for label, cfg in [
+        ("Bỏ breakout", replace(full_cfg, use_breakout=False)),
+        ("Bỏ Price Action", replace(full_cfg, use_pa=False)),
+        (
+            "Chỉ trend + Value Zone",
+            replace(full_cfg, use_breakout=False, use_pa=False),
+        ),
+    ]:
+        trades = _run_pure_universe(
+            symbols, days, exchange_id, cfg, [best_tp]
+        )[best_tp]
+        ablation_rows.append({
+            "config": label,
+            **_pure_metrics(trades, days, len(symbols)),
+        })
+    ablation_report = pd.DataFrame(ablation_rows)
+
+    comparison_tp = "fixed_2r"
+    existing = _run_existing_binance(
+        symbols, days, exchange_id, comparison_tp
+    )
+    comparison_rows = []
+    for system, trades in [
+        ("Sonic R thuần", pure_trades[comparison_tp]),
+        ("Hệ thống 7-filter", existing),
+    ]:
+        metrics = _pure_metrics(trades, days, len(symbols))
+        comparison_rows.append({
+            "system": system,
+            "tp_mode": comparison_tp,
+            "n_trades": metrics["n_trades"],
+            "expectancy_r": metrics["expectancy_r"],
+            "avg_mfe_winners": metrics["avg_mfe_winners"],
+            "pct_reached_3r": metrics["pct_reached_3r"],
+            "max_dd": metrics["max_dd"],
+        })
+    return (
+        tp_report,
+        ablation_report,
+        pd.DataFrame(comparison_rows),
+        best_tp,
+    )
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=365)
-    ap.add_argument("--symbols", nargs="+", default=TOP10)
+    ap.add_argument("--symbols", nargs="+")
+    ap.add_argument("--exchange", default="binance")
+    ap.add_argument("--top", type=int, default=50)
     ap.add_argument("--tp", default="fixed_2r",
                     choices=["fixed_2r", "sr_level", "fib_extension"])
     reports = ap.add_mutually_exclusive_group()
@@ -307,8 +523,46 @@ def main():
     reports.add_argument("--mfe-report", action="store_true")
     reports.add_argument("--pa-breakdown", action="store_true")
     reports.add_argument("--regime-report", action="store_true")
+    reports.add_argument("--pure-sonic", action="store_true")
     args = ap.parse_args()
 
+    if args.pure_sonic:
+        symbols = args.symbols or top_usdt_symbols(args.exchange, args.top)
+        print(
+            f"PURE SONIC — {args.exchange}, {len(symbols)} coin, "
+            f"{args.days} ngày, KHÔNG PHÍ"
+        )
+        tp_report, ablation, comparison, best_tp = run_pure_sonic_report(
+            symbols, args.days, args.exchange
+        )
+        print("\n3 TP MODES")
+        print(tp_report.to_string(index=False))
+        print(f"\nBEST TP: {best_tp}")
+        print("\nABLATION")
+        print(ablation.to_string(index=False))
+        print("\nPURE VS 7-FILTER")
+        print(comparison.to_string(index=False))
+        verdict = (
+            "TÌM THẤY EDGE"
+            if tp_report["stat_edge"].any()
+            else "KHÔNG CÓ TP MODE NÀO ĐẠT STAT_EDGE"
+        )
+        print(f"\nKẾT LUẬN: {verdict}")
+
+        out = Path("results")
+        out.mkdir(exist_ok=True)
+        tp_report.to_csv(
+            out / f"pure_sonic_tp_{args.days}d.csv", index=False
+        )
+        ablation.to_csv(
+            out / f"pure_sonic_ablation_{args.days}d.csv", index=False
+        )
+        comparison.to_csv(
+            out / f"pure_vs_7filter_{args.days}d.csv", index=False
+        )
+        return
+
+    args.symbols = args.symbols or TOP10
     cfg = Config()
     if args.ablation:
         report = run_ablation(args.symbols, args.days, cfg, args.tp)

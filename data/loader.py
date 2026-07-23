@@ -1,11 +1,7 @@
-"""
-Data loader — tải OHLCV từ OKX qua ccxt.
+"""Data loader ccxt.
 
-Lưu ý về survivorship bias:
-Danh sách TOP10 dưới đây là top market cap tại thời điểm viết code.
-Backtest 3 năm bằng danh sách hôm nay = survivorship bias
-(ta đang chọn những coin ĐÃ SỐNG SÓT và thành công).
-Kết quả sẽ đẹp hơn thực tế. Đây là hạn chế đã biết, phải ghi rõ trong báo cáo.
+Danh sách top volume được lấy tại thời điểm chạy. Dùng danh sách hôm nay để
+backtest quá khứ có survivorship bias và thường làm kết quả đẹp hơn thực tế.
 """
 
 import time
@@ -21,7 +17,7 @@ except ImportError:
 CACHE_DIR = Path(__file__).parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True, parents=True)
 
-# Top market cap có trên OKX (cập nhật thủ công)
+# Universe cũ, giữ để dashboard và các lệnh lịch sử không đổi đột ngột.
 TOP10 = [
     "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
     "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT",
@@ -29,20 +25,55 @@ TOP10 = [
 
 TIMEFRAMES = ["15m", "1H", "4H", "1D"]
 
-# ccxt dùng chữ thường cho OKX
+# ccxt dùng chữ thường cho tên timeframe.
 TF_MAP = {"15m": "15m", "1H": "1h", "4H": "4h", "1D": "1d"}
+STABLE_BASES = {
+    "USDC", "FDUSD", "TUSD", "BUSD", "USDP", "DAI", "USDE", "USDS",
+    "USD1", "RLUSD", "EUR", "AEUR", "EURI",
+}
+LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
 
 
-def _cache_path(symbol: str, timeframe: str, since_days: int) -> Path:
+def _cache_path(
+    symbol: str,
+    timeframe: str,
+    since_days: int,
+    exchange_id: str = "binance",
+) -> Path:
     safe = symbol.replace("/", "_")
-    return CACHE_DIR / f"{safe}_{timeframe}_{since_days}d.parquet"
+    directory = CACHE_DIR / exchange_id
+    directory.mkdir(exist_ok=True, parents=True)
+    return directory / f"{safe}_{timeframe}_{since_days}d.parquet"
+
+
+def top_usdt_symbols(exchange_id: str = "binance", limit: int = 50) -> list[str]:
+    """Top USDT spot theo quote volume 24h hiện tại — có survivorship bias."""
+    if ccxt is None:
+        raise ImportError("Cần cài ccxt: pip install ccxt")
+
+    tickers = getattr(ccxt, exchange_id)({"enableRateLimit": True}).fetch_tickers()
+    ranked = []
+    for symbol, ticker in tickers.items():
+        if not symbol.endswith("/USDT") or ":" in symbol:
+            continue
+        base = symbol.removesuffix("/USDT")
+        if base in STABLE_BASES or base.endswith(LEVERAGED_SUFFIXES):
+            continue
+        volume = ticker.get("quoteVolume")
+        if volume is not None:
+            ranked.append((float(volume), symbol))
+
+    symbols = [symbol for _, symbol in sorted(ranked, reverse=True)[:limit]]
+    if len(symbols) < limit:
+        raise RuntimeError(f"{exchange_id} chỉ trả về {len(symbols)}/{limit} cặp hợp lệ")
+    return symbols
 
 
 def fetch_ohlcv(
     symbol: str,
     timeframe: str = "15m",
     since_days: int = 1095,
-    exchange_id: str = "okx",
+    exchange_id: str = "binance",
     use_cache: bool = True,
     verbose: bool = True,
     cache_max_age: float | None = 3600,
@@ -54,7 +85,7 @@ def fetch_ohlcv(
         since_days: số ngày lịch sử. 1095 = 3 năm.
         cache_max_age: tuổi cache tối đa theo giây; ``None`` dùng snapshot hiện có.
     """
-    path = _cache_path(symbol, timeframe, since_days)
+    path = _cache_path(symbol, timeframe, since_days, exchange_id)
     if (
         use_cache
         and path.exists()
@@ -77,7 +108,7 @@ def fetch_ohlcv(
     since = ex.milliseconds() - since_days * 24 * 60 * 60 * 1000
     all_rows = []
     fetch_error = None
-    limit = 300  # OKX giới hạn
+    limit = 1000 if exchange_id == "binance" else 300
 
     while True:
         try:
@@ -123,23 +154,35 @@ def fetch_ohlcv(
     return df
 
 
-def load_all_timeframes(symbol: str, since_days: int = 1095,
-                        verbose: bool = True) -> dict:
+def load_all_timeframes(
+    symbol: str,
+    since_days: int = 1095,
+    verbose: bool = True,
+    exchange_id: str = "binance",
+) -> dict:
     """Tải cả 4 khung cho 1 symbol."""
     return {
-        tf: fetch_ohlcv(symbol, tf, since_days, verbose=verbose)
+        tf: fetch_ohlcv(
+            symbol, tf, since_days, exchange_id=exchange_id, verbose=verbose
+        )
         for tf in TIMEFRAMES
     }
 
 
-def load_universe(symbols=None, since_days: int = 1095) -> dict:
+def load_universe(
+    symbols=None,
+    since_days: int = 1095,
+    exchange_id: str = "binance",
+) -> dict:
     """Tải toàn bộ universe. Trả về {symbol: {tf: df}}."""
-    symbols = symbols or TOP10
+    symbols = symbols or top_usdt_symbols(exchange_id)
     data = {}
     for sym in symbols:
         print(f"\n{sym}")
         try:
-            data[sym] = load_all_timeframes(sym, since_days)
+            data[sym] = load_all_timeframes(
+                sym, since_days, exchange_id=exchange_id
+            )
         except Exception as e:
             print(f"  [bỏ qua] {e}")
     return data

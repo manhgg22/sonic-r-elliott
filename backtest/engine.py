@@ -228,9 +228,8 @@ def run_backtest(
                 continue
 
             risk_per_unit = entry - sl
-            # Bỏ qua lệnh có SL quá sát (< 0.1% giá) — phí sẽ ăn hết,
-            # và R-multiple trở nên vô nghĩa
-            if risk_per_unit < entry * 0.001:
+            # Chỉ áp dụng sàn khoảng SL khi backtest có phí.
+            if costs.round_trip > 0 and risk_per_unit < entry * 0.001:
                 continue
             risk_amount = balance * risk_pct / 100
             size = risk_amount / risk_per_unit

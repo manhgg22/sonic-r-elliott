@@ -22,6 +22,7 @@ from core.mtf import (
     resample_ohlcv,
     verify_no_lookahead,
 )
+from core.pure_sonic import PureSonicConfig, build_pure_signals
 from core.signals import Config, build_signals, dow_and_fib_state, main_wave_filters
 from backtest.diagnostics import ablation_variants, funnel
 from backtest.engine import Costs, run_backtest
@@ -189,6 +190,40 @@ def test_regimes_use_only_closed_history_and_entry_time():
     assert tagged.loc[0, "regime"] == "bull"
     assert tagged["regime"].notna().all()
     print("  [OK] Regime chỉ dùng quá khứ và gắn theo entry_time")
+
+
+def test_pure_sonic_no_lookahead():
+    entry = make_synthetic(90 * 96)
+    main = resample_ohlcv(entry, "1h")
+    aligned = align_htf_to_ltf(main[["close"]], entry.index)
+    report = verify_no_lookahead(main, aligned, samples=500)
+    assert report["clean"], report
+
+    full = build_pure_signals(entry, main, PureSonicConfig())
+    cutoff = len(entry) - 96
+    partial_entry = entry.iloc[:cutoff]
+    partial_main = resample_ohlcv(partial_entry, "1h")
+    partial = build_pure_signals(
+        partial_entry, partial_main, PureSonicConfig()
+    )
+    assert full.loc[partial.index, "entry_signal"].equals(partial["entry_signal"])
+    print(f"  [OK] Pure Sonic main→entry: 0/{report['checked']} vi phạm")
+
+
+def test_pure_sonic_only_four_conditions():
+    entry = make_synthetic(90 * 96)
+    main = resample_ohlcv(entry, "1h")
+    sig = build_pure_signals(entry, main, PureSonicConfig())
+    filters = [column for column in sig if column.startswith("f_")]
+    assert filters == ["f_trend", "f_breakout", "f_value_zone", "f_pa"]
+    assert not {"f_dow", "f_fib", "f_adx", "f_sep"} & set(sig)
+    loose = build_pure_signals(
+        entry,
+        main,
+        PureSonicConfig(use_breakout=False, use_pa=False),
+    )
+    assert (loose["entry_signal"] >= sig["entry_signal"]).all()
+    print("  [OK] Pure Sonic chỉ có đúng 4 điều kiện")
 
 
 def test_adx_range():
@@ -463,11 +498,37 @@ def test_backtest_closes_at_end():
     print("  [OK] Engine đóng lệnh cuối dữ liệu, tính đúng 1R và số ngày")
 
 
+def test_no_cost_backtest_keeps_tight_stops():
+    idx = pd.date_range("2024-01-01", periods=3, freq="15min", tz="UTC")
+    prices = pd.DataFrame(
+        {
+            "high": [100.01, 100.20, 100.20],
+            "low": [99.99, 100.00, 100.00],
+            "close": [100.00, 100.10, 100.10],
+        },
+        index=idx,
+    )
+    sig = pd.DataFrame(
+        {
+            "entry_signal": [True, False, False],
+            "sl": [99.95] * 3,
+            "pa_engulfing": [False] * 3,
+            "pa_pinbar": [True] * 3,
+            "pa_bos": [False] * 3,
+        },
+        index=idx,
+    )
+    assert len(run_backtest(sig, prices, costs=Costs(0, 0))) == 1
+    assert run_backtest(sig, prices).empty
+    print("  [OK] Backtest không phí không loại SL sát")
+
+
 def test_drawdown_includes_initial_balance():
     trades = pd.DataFrame(
         {"pnl": [-100.0], "r_multiple": [-1.0], "bars_held": [1]}
     )
     assert basic_metrics(trades)["max_drawdown_pct"] == 1.0
+    assert basic_metrics(trades, initial_balance=20000)["max_drawdown_pct"] == 0.5
     print("  [OK] Drawdown tính từ số dư ban đầu")
 
 
@@ -494,16 +555,42 @@ def test_loader_keeps_cache_after_partial_download():
             loader.CACHE_DIR = Path(tmp)
             loader.ccxt = FakeCcxt()
             cached = make_synthetic(10)
-            path = loader._cache_path("BTC/USDT", "15m", 1)
+            path = loader._cache_path("BTC/USDT", "15m", 1, "okx")
             cached.to_parquet(path)
             result = loader.fetch_ohlcv(
-                "BTC/USDT", "15m", 1, cache_max_age=0
+                "BTC/USDT", "15m", 1, exchange_id="okx", cache_max_age=0
             )
             assert result.equals(cached)
             assert pd.read_parquet(path).equals(cached)
         finally:
             loader.CACHE_DIR, loader.ccxt = old_cache, old_ccxt
     print("  [OK] Loader không ghi đè cache khi download lỗi giữa chừng")
+
+
+def test_binance_top_symbols_excludes_stable_and_leveraged():
+    class FakeExchange:
+        def fetch_tickers(self):
+            return {
+                "BTC/USDT": {"quoteVolume": 100},
+                "ETH/USDT": {"quoteVolume": 90},
+                "SOL/USDT": {"quoteVolume": 80},
+                "USDC/USDT": {"quoteVolume": 1000},
+                "ETHUP/USDT": {"quoteVolume": 900},
+                "BTC/USDT:USDT": {"quoteVolume": 800},
+            }
+
+    class FakeCcxt:
+        binance = staticmethod(lambda options: FakeExchange())
+
+    old_ccxt = loader.ccxt
+    try:
+        loader.ccxt = FakeCcxt()
+        assert loader.top_usdt_symbols(limit=3) == [
+            "BTC/USDT", "ETH/USDT", "SOL/USDT"
+        ]
+    finally:
+        loader.ccxt = old_ccxt
+    print("  [OK] Binance TOP volume loại stablecoin và leveraged token")
 
 
 if __name__ == "__main__":
@@ -524,6 +611,8 @@ if __name__ == "__main__":
     test_mtf_value_is_previous_bar()
     test_mtf_verifier_allows_equal_closes()
     test_regimes_use_only_closed_history_and_entry_time()
+    test_pure_sonic_no_lookahead()
+    test_pure_sonic_only_four_conditions()
 
     print("\n[3] Pipeline đầy đủ")
     sig = test_full_pipeline()
@@ -539,8 +628,10 @@ if __name__ == "__main__":
 
     print("\n[4] Backtest engine")
     test_backtest_closes_at_end()
+    test_no_cost_backtest_keeps_tight_stops()
     test_drawdown_includes_initial_balance()
     test_loader_keeps_cache_after_partial_download()
+    test_binance_top_symbols_excludes_stable_and_leveraged()
 
     print("\n" + "=" * 60)
     print("TẤT CẢ TEST PASS")

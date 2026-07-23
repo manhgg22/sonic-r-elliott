@@ -1,5 +1,5 @@
 __pycache__/
 *.py[cod]
 .venv/
-data/cache/*.parquet
+data/cache/
 results/
