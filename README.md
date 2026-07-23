@@ -32,27 +32,24 @@ entry; Fibo extension luôn độc lập với entry và chỉ dùng cho TP.
 pip install -r requirements.txt
 ```
 
-## Signal Center — OKX TOP20
+## Signal Center — toàn bộ OKX LONG/SHORT
 
-Một màn hình duy nhất quét **20 coin vốn hóa lớn nhất có spot USDT hoạt động
-trên OKX**. Thứ tự vốn hóa lấy động từ CoinGecko; stablecoin và coin không có
-spot USDT trên OKX bị loại.
+Một màn hình quét toàn bộ perpetual USDT crypto active trên OKX. Sản phẩm
+stock/commodity tokenized bị loại bằng `instCategory`, nên universe chỉ gồm
+coin có thể LONG và SHORT. Số lượng được lấy động khi mở ứng dụng.
 
 ```bash
 streamlit run dashboard/signal_app.py
 ```
 
-Mở `http://localhost:8501`. Bảng quét chỉ báo BUY khi nến M15 đã đóng và đủ:
+Mở `http://localhost:8501`. Bảng chỉ phát tín hiệu khi nến M15 đã đóng.
 
-1. EMA34 trên EMA89 khung H1.
-2. H1 đã phá đỉnh 20 nến trong 30 nến gần nhất.
-3. Dow H1 xác nhận HH + HL bằng pivot đã xác nhận.
-4. M15 hồi về Value Zone H1.
-5. M15 có bullish engulfing hoặc pinbar.
+- LONG: EMA34 > EMA89, breakout, Dow HH/HL, hồi Value Zone, bullish PA.
+- SHORT: EMA34 < EMA89, breakdown, Dow LL/LH, hồi Value Zone, bearish PA.
 
 Mỗi tín hiệu READY hiển thị Entry, SL, TP1 Fibo 1.618, TP2 Fibo 2.618,
-trailing EMA34-low H1 và khối lượng spot ước tính theo mức risk đã chọn.
-Ứng dụng không giữ API key và **không tự đặt lệnh**.
+trailing EMA34 H1, số hợp đồng, notional và risk ước tính. Ứng dụng không giữ
+API key và **không tự đặt lệnh**.
 
 Đóng gói Docker:
 
@@ -126,7 +123,7 @@ data/
   loader.py       CoinGecko market cap + ccxt Binance/OKX, cache parquet
 dashboard/
   app.py          Streamlit + Plotly
-  signal_app.py   Signal Center OKX TOP20, Entry/SL/TP rõ ràng
+  signal_app.py   Signal Center toàn OKX, LONG/SHORT với Entry/SL/TP
 sonic_r_elliott.pine   Indicator TradingView
 ```
 

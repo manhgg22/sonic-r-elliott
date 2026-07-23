@@ -8,6 +8,7 @@ thực tế.
 import json
 import time
 from pathlib import Path
+from threading import Lock
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -39,6 +40,21 @@ STABLE_BASES = {
 }
 LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
+_REQUEST_LOCK = Lock()
+_LAST_REQUEST = {}
+
+
+def _throttle(exchange_id: str) -> None:
+    """Giữ tổng OKX dưới public limit 20 request/2 giây."""
+    interval = 0.14 if exchange_id == "okx" else 0
+    if not interval:
+        return
+    with _REQUEST_LOCK:
+        now = time.monotonic()
+        wait = interval - (now - _LAST_REQUEST.get(exchange_id, 0))
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_REQUEST[exchange_id] = time.monotonic()
 
 
 def _cache_path(
@@ -47,7 +63,7 @@ def _cache_path(
     since_days: int,
     exchange_id: str = "binance",
 ) -> Path:
-    safe = symbol.replace("/", "_")
+    safe = symbol.replace("/", "_").replace(":", "_")
     directory = CACHE_DIR / exchange_id
     directory.mkdir(exist_ok=True, parents=True)
     return directory / f"{safe}_{timeframe}_{since_days}d.parquet"
@@ -160,11 +176,54 @@ def top_market_cap_universe(
     return _select_market_cap_universe(coins, markets, limit)
 
 
+def _select_usdt_crypto_swaps(markets: dict) -> list[dict]:
+    """Toàn bộ perpetual USDT crypto active, loại stock/commodity tokenized."""
+    selected = []
+    for market in markets.values():
+        if not (
+            market.get("swap")
+            and market.get("linear")
+            and market.get("settle") == "USDT"
+            and market.get("active") is not False
+            and market.get("info", {}).get("instCategory") == "1"
+        ):
+            continue
+        selected.append({
+            "name": market["base"],
+            "base": market["base"],
+            "symbol": market["symbol"],
+            "contract_size": market.get("contractSize") or 1.0,
+            "amount_step": market.get("precision", {}).get("amount") or 1.0,
+            "min_contracts": (
+                market.get("limits", {}).get("amount", {}).get("min")
+                or market.get("precision", {}).get("amount")
+                or 1.0
+            ),
+        })
+
+    selected.sort(key=lambda row: row["base"])
+    for rank, row in enumerate(selected, 1):
+        row["rank"] = rank
+    return selected
+
+
+def okx_usdt_swap_universe() -> list[dict]:
+    """Tất cả perpetual USDT crypto đang active trên OKX."""
+    if ccxt is None:
+        raise ImportError("Cần cài ccxt: pip install ccxt")
+    markets = ccxt.okx({"enableRateLimit": True}).load_markets()
+    universe = _select_usdt_crypto_swaps(markets)
+    if not universe:
+        raise RuntimeError("OKX không trả về perpetual USDT crypto nào")
+    return universe
+
+
 def fetch_ohlcv(
     symbol: str,
     timeframe: str = "15m",
     since_days: int = 1095,
     exchange_id: str = "binance",
+    exchange=None,
     use_cache: bool = True,
     verbose: bool = True,
     cache_max_age: float | None = 3600,
@@ -193,7 +252,7 @@ def fetch_ohlcv(
     if ccxt is None:
         raise ImportError("Cần cài ccxt: pip install ccxt")
 
-    ex = getattr(ccxt, exchange_id)({"enableRateLimit": True})
+    ex = exchange or getattr(ccxt, exchange_id)({"enableRateLimit": True})
     tf = TF_MAP.get(timeframe, timeframe)
 
     since = ex.milliseconds() - since_days * 24 * 60 * 60 * 1000
@@ -202,11 +261,24 @@ def fetch_ohlcv(
     limit = 1000 if exchange_id == "binance" else 300
 
     while True:
-        try:
-            batch = ex.fetch_ohlcv(symbol, tf, since=since, limit=limit)
-        except Exception as e:
-            print(f"  [lỗi] {symbol} {timeframe}: {e}")
-            fetch_error = e
+        for attempt in range(3):
+            try:
+                _throttle(exchange_id)
+                batch = ex.fetch_ohlcv(symbol, tf, since=since, limit=limit)
+                break
+            except Exception as e:
+                transient = any(
+                    marker in str(e).lower()
+                    for marker in ("rate limit", "too many", "429", "50011", "timeout")
+                )
+                if transient and attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                print(f"  [lỗi] {symbol} {timeframe}: {e}")
+                fetch_error = e
+                batch = []
+                break
+        if fetch_error is not None:
             break
 
         if not batch:

@@ -25,6 +25,7 @@ from core.mtf import (
 from core.pure_sonic import PureSonicConfig, build_pure_signals
 from core.signals import Config, build_signals, dow_and_fib_state, main_wave_filters
 from core.trade_setup import (
+    build_short_trade_setup_signals,
     build_trade_setup_signals,
     closed_bars,
     latest_trade_setup,
@@ -253,7 +254,34 @@ def test_deploy_setup_has_five_gates_and_closed_bars():
     )
     assert setup["status"] == "READY"
     assert setup["sl"] < setup["entry"] < setup["tp1"] < setup["tp2"]
-    print("  [OK] Setup triển khai có đúng 5 gate và chỉ dùng nến đã đóng")
+
+    down = entry.copy()
+    ceiling = 300000.0
+    down["open"] = ceiling - entry["open"]
+    down["close"] = ceiling - entry["close"]
+    down["high"] = ceiling - entry["low"]
+    down["low"] = ceiling - entry["high"]
+    down_main = resample_ohlcv(down, "1h")
+    short_sig = build_short_trade_setup_signals(down, down_main)
+    cutoff = len(down) - 96
+    partial_down = down.iloc[:cutoff]
+    partial_short = build_short_trade_setup_signals(
+        partial_down, resample_ohlcv(partial_down, "1h")
+    )
+    assert short_sig.loc[
+        partial_short.index, "entry_signal"
+    ].equals(partial_short["entry_signal"])
+    short_time = short_sig.index[short_sig["entry_signal"]][-1]
+    short = latest_trade_setup(
+        "TEST/USDT",
+        down.loc[:short_time],
+        down_main.loc[:short_time.floor("1h")],
+        now=short_time + pd.offsets.Minute(15),
+        side="SHORT",
+    )
+    assert short["status"] == "READY"
+    assert short["tp2"] < short["tp1"] < short["entry"] < short["sl"]
+    print("  [OK] Setup LONG/SHORT có đúng 5 gate và chỉ dùng nến đã đóng")
 
 
 def test_adx_range():
@@ -588,7 +616,7 @@ def test_loader_keeps_cache_after_partial_download():
             path = loader._cache_path("BTC/USDT", "15m", 1, "okx")
             cached.to_parquet(path)
             result = loader.fetch_ohlcv(
-                "BTC/USDT", "15m", 1, exchange_id="okx", cache_max_age=0
+                "BTC/USDT", "15m", 1, exchange_id="okx", cache_max_age=-1
             )
             assert result.equals(cached)
             assert pd.read_parquet(path).equals(cached)
@@ -647,7 +675,25 @@ def test_market_cap_universe_is_tradable_and_excludes_stablecoins():
     universe = loader._select_market_cap_universe(coins, markets, 2)
     assert [row["symbol"] for row in universe] == ["BTC/USDT", "ETH/USDT"]
     assert [row["rank"] for row in universe] == [1, 2]
-    print("  [OK] Universe vốn hóa chỉ giữ spot USDT và loại stablecoin")
+
+    swap_markets = {
+        "btc": {
+            "symbol": "BTC/USDT:USDT", "base": "BTC", "settle": "USDT",
+            "swap": True, "linear": True, "active": True, "contractSize": 0.01,
+            "precision": {"amount": 0.01}, "info": {"instCategory": "1"},
+        },
+        "aapl": {
+            "symbol": "AAPL/USDT:USDT", "base": "AAPL", "settle": "USDT",
+            "swap": True, "linear": True, "active": True,
+            "info": {"instCategory": "3"},
+        },
+    }
+    swaps = loader._select_usdt_crypto_swaps(swap_markets)
+    assert [row["symbol"] for row in swaps] == ["BTC/USDT:USDT"]
+    assert ":" not in loader._cache_path(
+        "BTC/USDT:USDT", "15m", 3, "okx"
+    ).name
+    print("  [OK] Universe lọc đúng spot vốn hóa và perpetual crypto")
 
 
 if __name__ == "__main__":
