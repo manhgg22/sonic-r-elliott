@@ -24,6 +24,11 @@ from core.mtf import (
 )
 from core.pure_sonic import PureSonicConfig, build_pure_signals
 from core.signals import Config, build_signals, dow_and_fib_state, main_wave_filters
+from core.trade_setup import (
+    build_trade_setup_signals,
+    closed_bars,
+    latest_trade_setup,
+)
 from backtest.diagnostics import ablation_variants, funnel
 from backtest.engine import Costs, run_backtest
 from backtest.metrics import basic_metrics, frequency_check, wilson_edge_interval
@@ -224,6 +229,31 @@ def test_pure_sonic_only_four_conditions():
     )
     assert (loose["entry_signal"] >= sig["entry_signal"]).all()
     print("  [OK] Pure Sonic chỉ có đúng 4 điều kiện")
+
+
+def test_deploy_setup_has_five_gates_and_closed_bars():
+    tiny = make_synthetic(4)
+    now = tiny.index[-1] + pd.offsets.Minute(10)
+    assert len(closed_bars(tiny, "15m", now)) == 3
+
+    entry = make_synthetic(180 * 96, seed=0)
+    main = resample_ohlcv(entry, "1h")
+    sig = build_trade_setup_signals(entry, main)
+    filters = [column for column in sig if column.startswith("f_")]
+    assert filters == [
+        "f_trend", "f_breakout", "f_dow", "f_value_zone", "f_pa"
+    ]
+    assert (sig["entry_signal"] <= sig["f_dow"]).all()
+    signal_time = sig.index[sig["entry_signal"]][-1]
+    setup = latest_trade_setup(
+        "TEST/USDT",
+        entry.loc[:signal_time],
+        main.loc[:signal_time.floor("1h")],
+        now=signal_time + pd.offsets.Minute(15),
+    )
+    assert setup["status"] == "READY"
+    assert setup["sl"] < setup["entry"] < setup["tp1"] < setup["tp2"]
+    print("  [OK] Setup triển khai có đúng 5 gate và chỉ dùng nến đã đóng")
 
 
 def test_adx_range():
@@ -593,6 +623,33 @@ def test_binance_top_symbols_excludes_stable_and_leveraged():
     print("  [OK] Binance TOP volume loại stablecoin và leveraged token")
 
 
+def test_market_cap_universe_is_tradable_and_excludes_stablecoins():
+    markets = {
+        "btc": {
+            "symbol": "BTC/USDT", "base": "BTC", "quote": "USDT",
+            "spot": True, "active": True,
+        },
+        "usdc": {
+            "symbol": "USDC/USDT", "base": "USDC", "quote": "USDT",
+            "spot": True, "active": True,
+        },
+        "eth": {
+            "symbol": "ETH/USDT", "base": "ETH", "quote": "USDT",
+            "spot": True, "active": True,
+        },
+    }
+    coins = [
+        {"symbol": "eth", "name": "Ethereum", "market_cap": 200, "market_cap_rank": 2},
+        {"symbol": "none", "name": "Not listed", "market_cap": 300, "market_cap_rank": 1},
+        {"symbol": "usdc", "name": "USDC", "market_cap": 250, "market_cap_rank": 3},
+        {"symbol": "btc", "name": "Bitcoin", "market_cap": 400, "market_cap_rank": 1},
+    ]
+    universe = loader._select_market_cap_universe(coins, markets, 2)
+    assert [row["symbol"] for row in universe] == ["BTC/USDT", "ETH/USDT"]
+    assert [row["rank"] for row in universe] == [1, 2]
+    print("  [OK] Universe vốn hóa chỉ giữ spot USDT và loại stablecoin")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("KIỂM CHỨNG CORE LOGIC")
@@ -613,6 +670,7 @@ if __name__ == "__main__":
     test_regimes_use_only_closed_history_and_entry_time()
     test_pure_sonic_no_lookahead()
     test_pure_sonic_only_four_conditions()
+    test_deploy_setup_has_five_gates_and_closed_bars()
 
     print("\n[3] Pipeline đầy đủ")
     sig = test_full_pipeline()
@@ -632,6 +690,7 @@ if __name__ == "__main__":
     test_drawdown_includes_initial_balance()
     test_loader_keeps_cache_after_partial_download()
     test_binance_top_symbols_excludes_stable_and_leveraged()
+    test_market_cap_universe_is_tradable_and_excludes_stablecoins()
 
     print("\n" + "=" * 60)
     print("TẤT CẢ TEST PASS")

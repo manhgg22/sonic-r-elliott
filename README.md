@@ -32,6 +32,38 @@ entry; Fibo extension luôn độc lập với entry và chỉ dùng cho TP.
 pip install -r requirements.txt
 ```
 
+## Signal Center — OKX TOP20
+
+Một màn hình duy nhất quét **20 coin vốn hóa lớn nhất có spot USDT hoạt động
+trên OKX**. Thứ tự vốn hóa lấy động từ CoinGecko; stablecoin và coin không có
+spot USDT trên OKX bị loại.
+
+```bash
+streamlit run dashboard/signal_app.py
+```
+
+Mở `http://localhost:8501`. Bảng quét chỉ báo BUY khi nến M15 đã đóng và đủ:
+
+1. EMA34 trên EMA89 khung H1.
+2. H1 đã phá đỉnh 20 nến trong 30 nến gần nhất.
+3. Dow H1 xác nhận HH + HL bằng pivot đã xác nhận.
+4. M15 hồi về Value Zone H1.
+5. M15 có bullish engulfing hoặc pinbar.
+
+Mỗi tín hiệu READY hiển thị Entry, SL, TP1 Fibo 1.618, TP2 Fibo 2.618,
+trailing EMA34-low H1 và khối lượng spot ước tính theo mức risk đã chọn.
+Ứng dụng không giữ API key và **không tự đặt lệnh**.
+
+Đóng gói Docker:
+
+```bash
+docker compose up --build -d
+docker compose logs -f signal-center
+```
+
+Cache thị trường được giữ tại `data/cache/`. Không mở cổng 8501 ra Internet
+công khai nếu chưa đặt ứng dụng sau lớp xác thực/reverse proxy.
+
 ## Sử dụng
 
 **1. Kiểm chứng core logic (chạy trước tiên):**
@@ -82,6 +114,7 @@ core/
   indicators.py   EMA, ATR, ADX, ZigZag (có độ trễ đúng), Fibonacci, Price Action
   mtf.py          Multi-timeframe alignment — CHỐNG LOOK-AHEAD
   pure_sonic.py   Bản thuần: trend, breakout, Value Zone, PA
+  trade_setup.py  Setup triển khai: Pure Sonic + Dow, chỉ dùng nến đã đóng
   signals.py      3 tầng lọc, mỗi filter bật/tắt độc lập
 backtest/
   engine.py       Mô phỏng bar-by-bar, 3 chế độ TP, partial exit, trailing
@@ -90,9 +123,10 @@ backtest/
   regime.py       BTC MA200/quarterly/ADX regime, gắn theo entry không look-ahead
   sweep.py        Sensitivity grid, gate đủ mẫu và đánh dấu tham số rìa
 data/
-  loader.py       ccxt → OKX, cache parquet
+  loader.py       CoinGecko market cap + ccxt Binance/OKX, cache parquet
 dashboard/
   app.py          Streamlit + Plotly
+  signal_app.py   Signal Center OKX TOP20, Entry/SL/TP rõ ràng
 sonic_r_elliott.pine   Indicator TradingView
 ```
 

@@ -1,11 +1,16 @@
 """Data loader ccxt.
 
-Danh sách top volume được lấy tại thời điểm chạy. Dùng danh sách hôm nay để
-backtest quá khứ có survivorship bias và thường làm kết quả đẹp hơn thực tế.
+Universe theo volume hoặc vốn hóa được lấy tại thời điểm chạy. Dùng danh sách
+hôm nay để backtest quá khứ có survivorship bias và thường làm kết quả đẹp hơn
+thực tế.
 """
 
+import json
 import time
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
 import pandas as pd
 
 try:
@@ -28,10 +33,12 @@ TIMEFRAMES = ["15m", "1H", "4H", "1D"]
 # ccxt dùng chữ thường cho tên timeframe.
 TF_MAP = {"15m": "15m", "1H": "1h", "4H": "4h", "1D": "1d"}
 STABLE_BASES = {
-    "USDC", "FDUSD", "TUSD", "BUSD", "USDP", "DAI", "USDE", "USDS",
-    "USD1", "RLUSD", "EUR", "AEUR", "EURI",
+    "USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USDP", "DAI", "USDE", "USDS",
+    "USD1", "RLUSD", "PYUSD", "USDD", "FRAX", "USDG", "GUSD", "EUR", "AEUR",
+    "EURI",
 }
 LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
+COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 
 
 def _cache_path(
@@ -67,6 +74,90 @@ def top_usdt_symbols(exchange_id: str = "binance", limit: int = 50) -> list[str]
     if len(symbols) < limit:
         raise RuntimeError(f"{exchange_id} chỉ trả về {len(symbols)}/{limit} cặp hợp lệ")
     return symbols
+
+
+def _select_market_cap_universe(
+    coins: list[dict],
+    markets: dict,
+    limit: int,
+) -> list[dict]:
+    """Chọn coin vốn hóa lớn nhất có spot USDT hoạt động trên sàn."""
+    spot_by_base = {}
+    for market in markets.values():
+        if (
+            market.get("spot")
+            and market.get("quote") == "USDT"
+            and market.get("active") is not False
+            and ":" not in market.get("symbol", "")
+        ):
+            spot_by_base.setdefault(market.get("base"), market["symbol"])
+
+    selected = []
+    ranked = sorted(
+        coins,
+        key=lambda coin: coin.get("market_cap") or 0,
+        reverse=True,
+    )
+    for coin in ranked:
+        base = str(coin.get("symbol", "")).upper()
+        symbol = spot_by_base.get(base)
+        if not symbol or base in STABLE_BASES or base.endswith(LEVERAGED_SUFFIXES):
+            continue
+        selected.append({
+            "rank": len(selected) + 1,
+            "market_cap_rank": coin.get("market_cap_rank"),
+            "name": coin.get("name", base),
+            "base": base,
+            "symbol": symbol,
+            "market_cap_usd": coin.get("market_cap"),
+            "price_usd": coin.get("current_price"),
+            "change_24h_pct": coin.get("price_change_percentage_24h"),
+        })
+        if len(selected) == limit:
+            break
+
+    if len(selected) < limit:
+        raise RuntimeError(
+            f"Chỉ ghép được {len(selected)}/{limit} coin vốn hóa với spot USDT"
+        )
+    return selected
+
+
+def top_market_cap_universe(
+    exchange_id: str = "okx",
+    limit: int = 20,
+) -> list[dict]:
+    """Top coin theo vốn hóa hiện tại có spot USDT trên sàn.
+
+    CoinGecko cung cấp thứ hạng vốn hóa; ccxt xác nhận cặp spot đang hoạt động.
+    Stablecoin bị loại. Đây là universe hiện tại nên có survivorship bias nếu
+    dùng để backtest quá khứ.
+    """
+    if ccxt is None:
+        raise ImportError("Cần cài ccxt: pip install ccxt")
+    if limit < 1:
+        raise ValueError("limit phải lớn hơn 0")
+
+    exchange = getattr(ccxt, exchange_id)({"enableRateLimit": True})
+    markets = exchange.load_markets()
+    params = urlencode({
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": min(250, max(100, limit * 4)),
+        "page": 1,
+        "sparkline": "false",
+    })
+    request = Request(
+        f"{COINGECKO_MARKETS_URL}?{params}",
+        headers={"User-Agent": "sonic-r-signal-center/1.0"},
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            coins = json.load(response)
+    except Exception as exc:
+        raise RuntimeError(f"Không tải được vốn hóa CoinGecko: {exc}") from exc
+
+    return _select_market_cap_universe(coins, markets, limit)
 
 
 def fetch_ohlcv(
