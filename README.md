@@ -170,6 +170,9 @@ chấp nhận khi `expectancy_r > 0`, có ít nhất 150 trade và `CI_low > 0`.
 Kiểm định 365 ngày cũng chỉ có một ô dương cô lập: đầy đủ mới × Fibo
 extension đạt `+0.018R` với 167 trade nhưng CI `[−5.94; +7.82]` chứa 0; hai ô
 lân cận cùng TP đều âm. Kéo dài lên 3 năm không làm CI loại được 0.
+Hai ứng viên Fibo dương trên mẫu gộp cũng không ổn định theo thời gian: các
+năm đầy đủ 2024/2025 lần lượt là `−0.013R/−0.089R` (đầy đủ mới) và
+`−0.047R/−0.005R` (thêm Fibo entry); không năm nào có `CI_low > 0`.
 
 - MFE/MAE 3 năm: winner đạt MFE trung bình 2.18R, chỉ 1.5% trade đạt 3R,
   MAE winner −0.44R. TP 2R là vừa và SL không quá sát.
