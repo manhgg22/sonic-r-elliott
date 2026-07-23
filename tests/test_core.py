@@ -17,7 +17,7 @@ import pandas as pd
 from core import indicators as ind
 from core.mtf import align_htf_to_ltf, verify_no_lookahead, resample_ohlcv
 from core.signals import Config, build_signals, dow_and_fib_state, main_wave_filters
-from backtest.diagnostics import funnel
+from backtest.diagnostics import ablation_variants, funnel
 from backtest.engine import Costs, run_backtest
 from backtest.metrics import basic_metrics, frequency_check
 
@@ -198,17 +198,12 @@ def test_cross_mode_state_vs_event():
     print(f"  [OK] Cross state {state.mean():.1%} > event {event.mean():.1%}")
 
 
-def test_config_full_and_sampling_preset():
-    flags = [
-        "use_d1_filter",
-        "use_h4_filter",
-        "use_cross_filter",
-        "use_adx_filter",
-        "use_separation_filter",
-        "use_dow_filter",
-        "use_fib_filter",
-    ]
-    assert all(getattr(Config(), flag) for flag in flags)
+def test_config_entry_defaults_and_sampling_preset():
+    cfg = Config()
+    assert cfg.use_h4_filter and cfg.use_cross_filter and cfg.use_adx_filter
+    assert cfg.use_separation_filter and cfg.use_dow_filter and cfg.require_pa
+    assert not cfg.use_d1_filter and not cfg.use_fib_filter
+    assert cfg.adx_min == 18 and cfg.separation_min == 0.35
     sampling = Config.baseline_sampling()
     assert sampling.use_cross_filter and sampling.use_adx_filter
     assert not any(
@@ -222,16 +217,64 @@ def test_config_full_and_sampling_preset():
         ]
     )
 
-    m15 = make_synthetic(2000)
+    m15 = make_synthetic(90 * 96)
     h1 = resample_ohlcv(m15, "1h")
     h4 = resample_ohlcv(m15, "4h")
     d1 = resample_ohlcv(m15, "1D")
-    strict = funnel(build_signals(m15, h1, h4, d1, Config()))
+    default_sig = build_signals(m15, h1, h4, d1, cfg)
+    default_funnel = funnel(default_sig)
     loose = funnel(build_signals(m15, h1, h4, d1, sampling))
-    assert strict["active"].eq("ON").all()
+    assert "f_d1" not in default_sig.attrs["active_filters"]
+    assert "f_fib" not in default_sig.attrs["active_filters"]
+    assert set(
+        default_funnel.loc[
+            default_funnel["stage"].isin(["f_d1", "f_fib"]), "active"
+        ]
+    ) == {"OFF"}
+    assert (
+        default_funnel.loc[
+            default_funnel["stage"].isin(["f_d1", "f_fib"]), "solo_count"
+        ]
+        > 0
+    ).all()
     assert set(loose.loc[loose["active"] == "OFF", "cumulative"]) == {"-"}
-    assert strict["solo_count"].equals(loose["solo_count"])
-    print("  [OK] Config đủ 7 filter; preset debug và funnel ON/OFF đúng")
+    assert default_funnel["solo_count"].equals(loose["solo_count"])
+    print("  [OK] Config H4/Dow/PA; D1/Fibo OFF và funnel vẫn đếm solo")
+
+
+def test_fib_tp_is_independent_from_entry_filter():
+    m15 = make_synthetic(90 * 96)
+    h1 = resample_ohlcv(m15, "1h")
+    h4 = resample_ohlcv(m15, "4h")
+    d1 = resample_ohlcv(m15, "1D")
+    sig = build_signals(m15, h1, h4, d1, Config(use_fib_filter=False))
+    with_swing = sig["swing_low"].notna() & sig["swing_high"].notna()
+    valid_tp = sig.loc[with_swing, ["tp_fib_1618", "tp_fib_2618"]].notna().all(axis=1)
+    assert with_swing.any() and valid_tp.mean() >= 0.80
+
+    custom = build_signals(
+        m15, h1, h4, d1, Config(use_fib_filter=False, tp_fib_1=1.5)
+    )
+    expected = custom["low"] + 1.5 * (custom["swing_high"] - custom["swing_low"])
+    assert np.allclose(
+        custom.loc[with_swing, "tp_fib_1618"],
+        expected.loc[with_swing],
+        equal_nan=True,
+    )
+    print(f"  [OK] TP Fibo độc lập entry, hợp lệ {valid_tp.mean():.1%} nến có swing")
+
+
+def test_ablation_variants():
+    variants = dict(ablation_variants(Config()))
+    assert list(variants) == [
+        "Đầy đủ (mới)", "Bỏ f_h4", "Bỏ f_cross", "Bỏ f_adx", "Bỏ f_sep",
+        "Bỏ f_dow", "Bỏ f_pa", "Thêm lại f_d1", "Thêm lại f_fib",
+    ]
+    assert not variants["Bỏ f_h4"].use_h4_filter
+    assert not variants["Bỏ f_pa"].require_pa
+    assert variants["Thêm lại f_d1"].use_d1_filter
+    assert variants["Thêm lại f_fib"].use_fib_filter
+    print("  [OK] Ablation đủ 9 cấu hình mới")
 
 
 def test_filters_not_mutually_exclusive():
@@ -319,7 +362,9 @@ if __name__ == "__main__":
     print("\n[3] Pipeline đầy đủ")
     sig = test_full_pipeline()
     test_cross_mode_state_vs_event()
-    test_config_full_and_sampling_preset()
+    test_config_entry_defaults_and_sampling_preset()
+    test_fib_tp_is_independent_from_entry_filter()
+    test_ablation_variants()
     test_filters_not_mutually_exclusive()
     test_signal_frequency_in_range()
 

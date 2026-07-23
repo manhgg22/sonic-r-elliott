@@ -1,7 +1,8 @@
-"""Chẩn đoán filter funnel cho hệ thống Sonic R + Elliott."""
+"""Chẩn đoán filter funnel cho hệ thống Sonic R + Dow + PA."""
 
 import argparse
 import sys
+from dataclasses import replace
 
 import pandas as pd
 
@@ -32,6 +33,21 @@ FILTER_FLAGS = {
     "f_fib": "use_fib_filter",
     "f_pa": "require_pa",
 }
+
+
+def ablation_variants(cfg: Config) -> list[tuple[str, Config]]:
+    """Các cấu hình bắt buộc của Ticket 12, không sửa ``cfg`` gốc."""
+    return [
+        ("Đầy đủ (mới)", replace(cfg)),
+        ("Bỏ f_h4", replace(cfg, use_h4_filter=False)),
+        ("Bỏ f_cross", replace(cfg, use_cross_filter=False)),
+        ("Bỏ f_adx", replace(cfg, use_adx_filter=False)),
+        ("Bỏ f_sep", replace(cfg, use_separation_filter=False)),
+        ("Bỏ f_dow", replace(cfg, use_dow_filter=False)),
+        ("Bỏ f_pa", replace(cfg, require_pa=False)),
+        ("Thêm lại f_d1", replace(cfg, use_d1_filter=True)),
+        ("Thêm lại f_fib", replace(cfg, use_fib_filter=True)),
+    ]
 
 
 def funnel(sig: pd.DataFrame) -> pd.DataFrame:

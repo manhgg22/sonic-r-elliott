@@ -1,6 +1,7 @@
-# Sonic R + Elliott — Trading System & Backtest
+# Sonic R + Dow + PA — Trading System & Backtest
 
-Bộ công cụ kiểm chứng hệ thống Sonic R (EMA 34/89) kết hợp Elliott Wave trên crypto.
+Bộ công cụ kiểm chứng Sonic R (EMA 34/89), Dow HH/HL và Price Action trên crypto.
+Elliott/Fibo chỉ còn dùng cho mục tiêu chốt lời extension.
 
 ---
 
@@ -8,17 +9,14 @@ Bộ công cụ kiểm chứng hệ thống Sonic R (EMA 34/89) kết hợp Elli
 
 | Khung | Vai trò | Điều kiện |
 |---|---|---|
-| **D1 + H4** | Nền xu hướng | Giá trên cụm EMA 34–89 |
-| **H1** | Sóng chính | EMA34 trên EMA89 + ADX + separation + Dow/Fibo |
+| **H4** | Nền xu hướng | Giá trên cụm EMA 34–89; D1 chỉ để tham khảo/ablation |
+| **H1** | Sóng chính | EMA34 trên EMA89 + ADX + separation + Dow HH/HL |
 | **M15** | Vào lệnh | Hồi về Value Zone + Price Action |
 
-`Config()` và dashboard mặc định bật đủ 7 filter. Preset
-`Config.baseline_sampling()` chỉ dùng để lấy mẫu khi debug; không đại diện
-cho phương pháp đầy đủ.
-
-Trên cửa sổ BTC/USDT 2025-07-23 → 2026-07-23, cấu hình đầy đủ và cả 1.296
-cấu hình sensitivity đều cho 0 lệnh. Đây là kết quả kịch bản C: phương pháp
-mô tả hiện chặt hơn hành vi giao dịch thực tế, không phải bằng chứng có edge.
+`Config()` và dashboard mặc định bật H4, H1 cross/ADX/separation, Dow,
+Value Zone và PA. D1 và vùng hồi Fibo vẫn được tính để chẩn đoán nhưng mặc
+định không lọc entry. Fibo extension luôn độc lập với entry và chỉ dùng cho TP.
+Preset `Config.baseline_sampling()` chỉ dùng để lấy mẫu khi debug.
 
 **Thoát lệnh — 3 chế độ chạy song song để so sánh:**
 
@@ -60,6 +58,7 @@ python -m backtest.diagnostics --synthetic --days 90
 python -m backtest.diagnostics --symbol BTC/USDT --days 365
 python -m backtest.diagnostics --synthetic --days 90 --baseline-sampling
 python -m backtest.sweep --symbol BTC/USDT --days 365
+python run_backtest.py --days 365 --ablation
 ```
 Sweep luôn bật bộ filter strict và lưu CSV vào `results/`. Cấu hình chỉ được
 đánh dấu `recommended` khi có ít nhất 100 lệnh, đạt 0.3–2.0 lệnh/ngày và

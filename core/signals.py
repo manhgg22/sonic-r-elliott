@@ -1,18 +1,15 @@
 """
-Signal Engine — dịch phương pháp Sonic R + Elliott thành điều kiện số học.
+Signal Engine — dịch phương pháp Sonic R + Dow + PA thành điều kiện số học.
 
-Mỗi tầng lọc tương ứng trực tiếp với một câu trong phương pháp gốc:
+  Tầng 1  "H4 giá nằm trên 34-89"        -> nền xu hướng (D1 tham khảo)
+  Tầng 2  "H1 EMA34 trên EMA89"          -> sóng chính
+          "sideway cực kì dễ toang"      -> ADX + separation filter
+          "dùng Dow"                     -> HH + HL bắt buộc
+  Tầng 3  "hồi về vùng giá trị"          -> M15 chạm Value Zone
+          "PA đẹp"                       -> engulfing / pinbar / BOS
+  TP      Fibo extension                 -> "ăn sóng dài"
 
-  Tầng 1  "D1/H4 giá nằm trên 34-89"        -> nền xu hướng
-  Tầng 2  "H1 EMA34 cắt lên EMA89"          -> sóng chính
-          "sideway anh em cực kì dễ toang"  -> ADX + separation filter
-          "dùng Dow"                        -> HH + HL
-          "sóng đẩy"                        -> vùng hồi Fibo cấu hình được
-  Tầng 3  "hồi về vùng giá trị ở TF nhỏ"    -> M15 chạm Value Zone
-          "tín hiệu Price Action đẹp"       -> engulfing / pinbar / BOS
-
-Mỗi filter được bật/tắt độc lập để chạy ablation test:
-biết chính xác filter nào tạo ra giá trị, filter nào chỉ là niềm tin.
+Mỗi filter được bật/tắt độc lập để chạy ablation test.
 """
 
 from dataclasses import dataclass, asdict
@@ -35,11 +32,11 @@ class Config:
     cross_mode: str = "state"        # 'state' | 'event'
     cross_valid_bars: int = 50       # cú cắt còn hiệu lực bao lâu
     adx_period: int = 14
-    adx_min: float = 20.0            # chống sideway
-    separation_min: float = 0.5      # |EMA34-EMA89| / ATR
+    adx_min: float = 18.0            # chống sideway
+    separation_min: float = 0.35     # |EMA34-EMA89| / ATR
     slope_lookback: int = 10
 
-    # Elliott Tầng 1 — vùng hồi hợp lệ
+    # Vùng hồi Fibo tùy chọn cho entry
     fib_lo: float = 0.30
     fib_hi: float = 0.75
 
@@ -61,15 +58,17 @@ class Config:
     # TP
     tp_mode: str = "fixed_2r"        # 'fixed_2r' | 'sr_level' | 'fib_extension'
     tp_r_multiple: float = 2.0
+    tp_fib_1: float = 1.618
+    tp_fib_2: float = 2.618
 
-    # Phương pháp đầy đủ: 7 filter đều bật.
-    use_d1_filter: bool = True
+    # Entry chuẩn: H4 + H1 + Dow + Value Zone + PA. D1/Fibo chỉ để ablation.
+    use_d1_filter: bool = False
     use_h4_filter: bool = True
     use_cross_filter: bool = True
     use_adx_filter: bool = True
     use_separation_filter: bool = True
     use_dow_filter: bool = True
-    use_fib_filter: bool = True
+    use_fib_filter: bool = False
 
     @classmethod
     def baseline_sampling(cls) -> "Config":
@@ -224,14 +223,17 @@ def build_signals(
     cfg: Config,
 ) -> pd.DataFrame:
     """
-    Gộp tất cả, sinh tín hiệu entry trên M15.
+    Gộp H4, H1, Dow, Value Zone và PA để sinh tín hiệu entry trên M15.
+
+    D1 và vùng hồi Fibo được tính để tham khảo/ablation nhưng mặc định không lọc
+    entry. Swing vẫn luôn được tính vì TP Fibo extension phụ thuộc vào nó.
 
     Trả về DataFrame index=M15 với:
       - từng cột filter (để ablation)
       - cột entry_signal cuối cùng
       - các mức SL/TP đề xuất
     """
-    # --- Tầng 1: nền D1 + H4, ghép xuống M15 (đã shift chống look-ahead)
+    # --- Tầng 1: nền H4; D1 tham khảo, ghép xuống M15 (đã shift chống look-ahead)
     d1_ok = base_trend_ok(d1, cfg).to_frame()
     h4_ok = base_trend_ok(h4, cfg).to_frame()
     d1_al = align_htf_to_ltf(d1_ok, m15.index)
@@ -334,7 +336,7 @@ def build_signals(
 
     # TP theo Fibo extension — chế độ "ăn sóng dài"
     ext_range = sig["swing_high"] - sig["swing_low"]
-    sig["tp_fib_1618"] = sig["low"] + 1.618 * ext_range
-    sig["tp_fib_2618"] = sig["low"] + 2.618 * ext_range
+    sig["tp_fib_1618"] = sig["low"] + cfg.tp_fib_1 * ext_range
+    sig["tp_fib_2618"] = sig["low"] + cfg.tp_fib_2 * ext_range
 
     return sig

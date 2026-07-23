@@ -19,6 +19,7 @@ from core.signals import Config, build_signals
 from core.mtf import resample_ohlcv, align_htf_to_ltf
 from core import indicators as ind
 from backtest.engine import run_backtest, Costs
+from backtest.diagnostics import ablation_variants
 from backtest import metrics as mt
 from data.loader import fetch_ohlcv, TOP10, data_quality_check
 
@@ -44,15 +45,52 @@ def run_one(symbol, days, cfg, tp_mode):
     return trades, m15.index
 
 
+def run_ablation(symbols, days, cfg, tp_mode):
+    rows = []
+    for label, variant in ablation_variants(cfg):
+        all_trades = []
+        for symbol in symbols:
+            trades, _ = run_one(symbol, days, variant, tp_mode)
+            if trades is not None and not trades.empty:
+                all_trades.append(trades)
+        combined = (
+            pd.concat(all_trades, ignore_index=True)
+            .sort_values("entry_time")
+            .reset_index(drop=True)
+            if all_trades
+            else pd.DataFrame()
+        )
+        metrics = mt.basic_metrics(combined)
+        rows.append(
+            {
+                "config": label,
+                "n_trades": metrics["n_trades"],
+                "winrate": metrics.get("winrate"),
+                "expectancy_r": metrics.get("expectancy_r"),
+                "max_dd": metrics.get("max_drawdown_pct"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=365)
     ap.add_argument("--symbols", nargs="+", default=TOP10)
     ap.add_argument("--tp", default="fixed_2r",
                     choices=["fixed_2r", "sr_level", "fib_extension"])
+    ap.add_argument("--ablation", action="store_true")
     args = ap.parse_args()
 
     cfg = Config()
+    if args.ablation:
+        report = run_ablation(args.symbols, args.days, cfg, args.tp)
+        print(report.to_string(index=False))
+        out = Path("results")
+        out.mkdir(exist_ok=True)
+        report.to_csv(out / f"ablation_{args.days}d.csv", index=False)
+        return
+
     all_trades = []
     all_indices = []
 

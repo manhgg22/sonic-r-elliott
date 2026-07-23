@@ -1,5 +1,5 @@
 """
-Dashboard Streamlit — Sonic R + Elliott Backtest
+Dashboard Streamlit — Sonic R + Dow + PA Backtest
 
 Chạy:  streamlit run dashboard/app.py
 
@@ -21,12 +21,13 @@ from core.signals import Config, build_signals
 from core.mtf import resample_ohlcv, align_htf_to_ltf
 from core import indicators as ind
 from backtest.engine import run_backtest, Costs
+from backtest.diagnostics import ablation_variants
 from backtest import metrics as mt
 from data.loader import fetch_ohlcv, TOP10
 
 
-st.set_page_config(page_title="Sonic R + Elliott", layout="wide")
-st.title("Sonic R + Elliott — Backtest Dashboard")
+st.set_page_config(page_title="Sonic R + Dow + PA", layout="wide")
+st.title("Sonic R + Dow + PA — Backtest Dashboard")
 
 
 # ------------------------------------------------------------------ SIDEBAR
@@ -37,7 +38,7 @@ with st.sidebar:
     days = st.slider("Số ngày lịch sử", 90, 1095, 365, step=30)
 
     st.subheader("Tầng 1 — Nền")
-    use_d1 = st.checkbox("D1 trên 34-89", True)
+    use_d1 = st.checkbox("D1 trên 34-89", False)
     use_h4 = st.checkbox("H4 trên 34-89", True)
 
     st.subheader("Tầng 2 — Sóng chính H1")
@@ -45,13 +46,13 @@ with st.sidebar:
     cross_mode = st.selectbox("Chế độ EMA cross", ["state", "event"])
     cross_bars = st.slider("Cú cắt hiệu lực (nến)", 10, 300, 50)
     use_adx = st.checkbox("ADX filter", True)
-    adx_min = st.slider("ADX tối thiểu", 10.0, 35.0, 20.0)
+    adx_min = st.slider("ADX tối thiểu", 10.0, 35.0, 18.0)
     use_sep = st.checkbox("EMA separation", True)
-    sep_min = st.slider("Separation / ATR", 0.0, 2.0, 0.5)
+    sep_min = st.slider("Separation / ATR", 0.0, 2.0, 0.35)
     use_dow = st.checkbox("Dow HH+HL", True)
 
     st.subheader("Elliott / Fibo")
-    use_fib = st.checkbox("Lọc vùng hồi Fibo", True)
+    use_fib = st.checkbox("Lọc vùng hồi Fibo", False)
     fib_lo, fib_hi = st.slider("Vùng Fibo", 0.0, 1.0, (0.30, 0.75))
     swing_max_age = st.slider("Tuổi swing tối đa (H1)", 50, 500, 200, step=50)
 
@@ -194,36 +195,26 @@ if run:
 
         if st.button("Chạy Ablation"):
             rows = []
-            base_cfg = build_cfg()
-            flags = ["use_d1_filter", "use_h4_filter", "use_cross_filter",
-                     "use_adx_filter", "use_separation_filter",
-                     "use_dow_filter", "use_fib_filter"]
+            variants = ablation_variants(build_cfg())
 
             prog = st.progress(0)
-            for i, flag in enumerate([None] + flags):
-                cfg_i = build_cfg()
-                label = "ĐẦY ĐỦ"
-                if flag:
-                    setattr(cfg_i, flag, False)
-                    label = f"Bỏ {flag.replace('use_','').replace('_filter','')}"
-
+            for i, (label, cfg_i) in enumerate(variants):
                 sig_i = build_signals(m15, h1, h4, d1, cfg_i)
                 tr_i = run_backtest(sig_i, m15, symbol=symbol,
                                     tp_mode=tp_mode, risk_pct=risk_pct,
                                     trail_ema=trail)
                 if tr_i.empty:
-                    rows.append({"config": label, "n": 0})
+                    rows.append({"config": label, "n_trades": 0})
                 else:
                     m_i = mt.basic_metrics(tr_i)
                     rows.append({
                         "config": label,
-                        "n": m_i["n_trades"],
+                        "n_trades": m_i["n_trades"],
                         "winrate": m_i["winrate"],
-                        "PF": m_i["profit_factor"],
-                        "expectancy_R": m_i["expectancy_r"],
-                        "maxDD": m_i["max_drawdown_pct"],
+                        "expectancy_r": m_i["expectancy_r"],
+                        "max_dd": m_i["max_drawdown_pct"],
                     })
-                prog.progress((i + 1) / (len(flags) + 1))
+                prog.progress((i + 1) / len(variants))
 
             st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
