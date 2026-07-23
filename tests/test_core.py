@@ -26,6 +26,12 @@ from core.signals import Config, build_signals, dow_and_fib_state, main_wave_fil
 from backtest.diagnostics import ablation_variants, funnel
 from backtest.engine import Costs, run_backtest
 from backtest.metrics import basic_metrics, frequency_check, wilson_edge_interval
+from backtest.regime import (
+    regime_adx_d1,
+    regime_btc_ma200,
+    regime_btc_quarterly,
+    tag_trades_with_regime,
+)
 from data import loader
 
 
@@ -145,6 +151,44 @@ def test_mtf_verifier_allows_equal_closes():
     report = verify_no_lookahead(h1, aligned)
     assert report["clean"], "Hai nến đóng bằng nhau bị báo nhầm look-ahead"
     print("  [OK] Bộ kiểm tra không báo sai khi hai nến HTF đóng bằng nhau")
+
+
+def test_regimes_use_only_closed_history_and_entry_time():
+    btc_d1 = make_synthetic(330)
+    btc_d1.index = pd.date_range(
+        "2023-01-01", periods=len(btc_d1), freq="1D", tz="UTC"
+    )
+    entry_index = pd.date_range(
+        btc_d1.index[210], btc_d1.index[-1], freq="1h", tz="UTC"
+    )
+
+    for regime_fn in [
+        regime_btc_ma200,
+        regime_btc_quarterly,
+        regime_adx_d1,
+    ]:
+        full = regime_fn(btc_d1)
+        partial = regime_fn(btc_d1.iloc[:280])
+        assert full.iloc[:280].equals(partial), f"{regime_fn.__name__} nhìn tương lai"
+
+        raw = full.shift(-1).to_frame()
+        aligned = full.to_frame().reindex(entry_index, method="ffill")
+        check = verify_no_lookahead(raw, aligned, "regime", samples=500)
+        assert check["clean"], (regime_fn.__name__, check)
+
+    regime = pd.Series(
+        ["bull", "bear"],
+        index=pd.to_datetime(["2023-09-08", "2023-09-09"], utc=True),
+        name="regime",
+    )
+    trades = pd.DataFrame({
+        "entry_time": [pd.Timestamp("2023-09-08 12:00", tz="UTC")],
+        "exit_time": [pd.Timestamp("2023-09-09 12:00", tz="UTC")],
+    })
+    tagged = tag_trades_with_regime(trades, regime)
+    assert tagged.loc[0, "regime"] == "bull"
+    assert tagged["regime"].notna().all()
+    print("  [OK] Regime chỉ dùng quá khứ và gắn theo entry_time")
 
 
 def test_adx_range():
@@ -479,6 +523,7 @@ if __name__ == "__main__":
     test_default_mapping_has_no_lookahead()
     test_mtf_value_is_previous_bar()
     test_mtf_verifier_allows_equal_closes()
+    test_regimes_use_only_closed_history_and_entry_time()
 
     print("\n[3] Pipeline đầy đủ")
     sig = test_full_pipeline()

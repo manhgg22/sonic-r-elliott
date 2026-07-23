@@ -69,8 +69,12 @@ def verify_no_lookahead(
         expected_val = htf_raw.iloc[current_pos - 1][col]
         aligned_val = aligned.loc[ts, col]
         checked += 1
-        if not pd.isna(expected_val) and abs(aligned_val - expected_val) >= 1e-12:
-            violations += 1
+        if not pd.isna(expected_val):
+            if pd.api.types.is_number(expected_val):
+                mismatch = abs(aligned_val - expected_val) >= 1e-12
+            else:
+                mismatch = aligned_val != expected_val
+            violations += int(mismatch)
 
     return {
         "checked": checked,

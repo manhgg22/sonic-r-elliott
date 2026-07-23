@@ -62,6 +62,7 @@ python run_backtest.py --days 365 --ablation
 python run_backtest.py --days 1095 --tp-matrix
 python run_backtest.py --days 1095 --mfe-report
 python run_backtest.py --days 365 --pa-breakdown
+python run_backtest.py --days 1095 --regime-report
 ```
 Sweep luôn bật bộ filter strict và lưu CSV vào `results/`. Cấu hình chỉ được
 đánh dấu `recommended` khi có ít nhất 100 lệnh, đạt 0.3–2.0 lệnh/ngày và
@@ -84,6 +85,7 @@ backtest/
   engine.py       Mô phỏng bar-by-bar, 3 chế độ TP, partial exit, trailing
   metrics.py      Winrate, PF, MFE/MAE, Monte Carlo, khoảng tin cậy
   diagnostics.py  Funnel, marginal contribution, overlap, retrace distribution
+  regime.py       BTC MA200/quarterly/ADX regime, gắn theo entry không look-ahead
   sweep.py        Sensitivity grid, gate đủ mẫu và đánh dấu tham số rìa
 data/
   loader.py       ccxt → OKX, cache parquet
@@ -104,6 +106,7 @@ sonic_r_elliott.pine   Indicator TradingView
 | "Ăn sóng dài" đáng không? | MFE trung bình, % lệnh chạm 2R/3R/5R |
 | "PA đẹp thì vào" | Winrate theo engulfing / pinbar / BOS |
 | Filter nào tạo giá trị? | Ablation test — bỏ từng filter, đo chênh lệch |
+| Edge chỉ có trong regime? | BTC MA200, return 90 ngày và ADX D1 |
 
 ---
 
@@ -184,15 +187,60 @@ Wilson CI là khoảng tin cậy 95% của **winrate vượt ngưỡng hòa vố
 - Regression M15 giữ nguyên 30 tín hiệu và 4 trade trên fixture; D1→H1 và
   H4→H1 đều ghi nhận 0 vi phạm look-ahead.
 
-**Quyết định:** không giao dịch hệ thống này bằng tiền thật ở trạng thái hiện
-tại và dừng tối ưu cùng bộ tín hiệu. Bước nghiên cứu hợp lệ tiếp theo phải là
-một giả thuyết regime được xác định định lượng trước, không phải sweep thêm.
+**Quyết định T16–T18:** không giao dịch hệ thống này bằng tiền thật và không
+sweep thêm. Regime analysis dưới đây là kiểm tra cuối cùng đã định trước.
+
+---
+
+## Kết luận T19–T20 — Regime analysis, 2026-07-23
+
+**Kết quả B: không có regime nào đạt tiêu chuẩn edge.** Báo cáo dùng top-10,
+ba năm, cấu hình D1/H4/H1 mặc định và cả ba chế độ TP. Ba định nghĩa tạo 21
+nhóm kết quả (9 cặp định nghĩa × TP); `EDGE` chỉ đúng khi `n >= 100`,
+`expectancy_r > 0` và `wilson_ci_low > 0`.
+
+| Định nghĩa | Regime | TP | n | WR | Wilson edge CI | Exp R | PF | Max DD | EDGE |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| BTC MA200 | Bull | 2R | 235 | 39.57% | [−5.37; +7.04] | +0.016 | 1.022 | 24.45% | Không |
+| BTC MA200 | Bear | 2R | 1 | 0.00% | N/A | −0.076 | 0.000 | 0.07% | Thiếu mẫu |
+| BTC MA200 | Bull | SR | 808 | 88.12% | [−5.47; −1.01] | −0.035 | 0.715 | 29.59% | Không |
+| BTC MA200 | Bear | SR | 1 | 100.00% | N/A | +0.108 | ∞ | 0.00% | Thiếu mẫu |
+| BTC MA200 | Bull | Fibo | 218 | 34.40% | [−5.09; +7.42] | +0.025 | 1.031 | 28.62% | Không |
+| BTC MA200 | Bear | Fibo | 1 | 0.00% | N/A | −0.076 | 0.000 | 0.07% | Thiếu mẫu |
+| BTC quarterly | Bull | 2R | 163 | 41.72% | [−5.07; +9.90] | +0.051 | 1.090 | 16.53% | Không |
+| BTC quarterly | Bear | 2R | 0 | N/A | N/A | N/A | N/A | N/A | Thiếu mẫu |
+| BTC quarterly | Sideway | 2R | 73 | 34.25% | [−12.30; +8.98] | −0.064 | 0.893 | 12.96% | Không |
+| BTC quarterly | Bull | SR | 604 | 89.74% | [−4.69; +0.16] | −0.023 | 0.784 | 15.11% | Không |
+| BTC quarterly | Bear | SR | 0 | N/A | N/A | N/A | N/A | N/A | Thiếu mẫu |
+| BTC quarterly | Sideway | SR | 205 | 83.41% | [−11.67; −1.51] | −0.070 | 0.592 | 14.96% | Không |
+| BTC quarterly | Bull | Fibo | 155 | 39.35% | [−0.44; +14.76] | +0.194 | 1.332 | 15.21% | Không |
+| BTC quarterly | Bear | Fibo | 0 | N/A | N/A | N/A | N/A | N/A | Thiếu mẫu |
+| BTC quarterly | Sideway | Fibo | 64 | 21.88% | [−23.05; −3.12] | −0.387 | 0.489 | 26.94% | Không |
+| ADX D1 | Trending | 2R | 122 | 45.90% | [−3.19; +14.22] | +0.116 | 1.253 | 9.98% | Không |
+| ADX D1 | Ranging | 2R | 114 | 32.46% | [−11.36; +5.58] | −0.092 | 0.841 | 26.11% | Không |
+| ADX D1 | Trending | SR | 483 | 90.68% | [−4.75; +0.45] | −0.020 | 0.787 | 11.63% | Không |
+| ADX D1 | Ranging | SR | 326 | 84.36% | [−9.13; −1.24] | −0.056 | 0.653 | 20.95% | Không |
+| ADX D1 | Trending | Fibo | 118 | 42.37% | [−0.43; +17.12] | +0.209 | 1.397 | 14.26% | Không |
+| ADX D1 | Ranging | Fibo | 101 | 24.75% | [−13.42; +3.21] | −0.191 | 0.735 | 24.38% | Không |
+
+- Hai ứng viên mạnh nhất vẫn chứa 0: quarterly bull × Fibo `+0.194R`,
+  CI low `−0.44`; ADX trending × Fibo `+0.209R`, CI low `−0.43`.
+- MA200 bear chỉ có 1 trade và quarterly bear không có trade trong cửa sổ này.
+  Các nhóm đó không đủ mẫu để kết luận riêng; chúng không được coi là edge.
+- Cả ba regime dùng BTC D1 có thêm 250 ngày warmup và shift một nến trước khi
+  gắn tại `entry_time`. Mỗi verifier kiểm tra 673 timestamp: **0 vi phạm**;
+  không trade nào nhận regime `NaN`.
+- T21 không chạy vì T20 không tìm thấy hàng nào qua gate. Việc tách năm/coin
+  hoặc dịch ngưỡng lúc này chỉ là khai thác thêm cùng dữ liệu, trái stopping rule.
+
+**Quyết định cuối giai đoạn backtest:** chưa có bằng chứng thống kê để giao
+dịch hệ thống bằng tiền thật. Dừng tinh chỉnh trên tập dữ liệu này.
 
 ---
 
 ## Bước tiếp theo
 
-- [ ] Regime analysis, chỉ chạy sau khi ghi trước giả thuyết và ngưỡng định lượng
 - [ ] Đối chiếu tín hiệu Pine Script vs Python
 - [ ] Thêm SELL setup (hiện chỉ có BUY)
-- [ ] Chỉ paper trade sau khi một cấu hình vượt đủ gate edge
+- [ ] Paper trading 2–3 tháng không dùng tiền thật, ghi nhật ký và đối chiếu
+      với trade log backtest cùng kỳ

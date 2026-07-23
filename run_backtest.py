@@ -18,11 +18,17 @@ sys.stdout.reconfigure(encoding="utf-8")
 import pandas as pd
 
 from core.signals import Config, build_signals
-from core.mtf import align_htf_to_ltf, map_timeframes
+from core.mtf import align_htf_to_ltf, map_timeframes, verify_no_lookahead
 from core import indicators as ind
 from backtest.engine import run_backtest
 from backtest.diagnostics import ablation_variants
 from backtest import metrics as mt
+from backtest.regime import (
+    regime_adx_d1,
+    regime_btc_ma200,
+    regime_btc_quarterly,
+    tag_trades_with_regime,
+)
 from data.loader import fetch_ohlcv, TOP10, data_quality_check
 
 
@@ -217,6 +223,78 @@ def run_pa_report(symbols, days):
     return breakdown, pd.DataFrame(rows)
 
 
+def run_regime_report(symbols, days):
+    """T20: ba định nghĩa regime × ba TP trên cùng trade log."""
+    btc_d1 = fetch_ohlcv(
+        "BTC/USDT", "1D", days + 250, cache_max_age=None
+    )
+    if len(btc_d1) < days + 200:
+        raise RuntimeError("BTC D1 không đủ 200 ngày warmup cho MA200")
+
+    definitions = [
+        ("btc_ma200", regime_btc_ma200(btc_d1), ["bull", "bear"]),
+        (
+            "btc_quarterly",
+            regime_btc_quarterly(btc_d1),
+            ["bull", "bear", "sideway"],
+        ),
+        ("adx_d1", regime_adx_d1(btc_d1), ["trending", "ranging"]),
+    ]
+    trades_by_tp = {
+        tp_mode: run_universe(symbols, days, Config(), tp_mode)
+        for tp_mode in ["fixed_2r", "sr_level", "fib_extension"]
+    }
+    entry_index = pd.DatetimeIndex(
+        pd.concat(
+            [trades[["entry_time"]] for trades in trades_by_tp.values()],
+            ignore_index=True,
+        )["entry_time"].drop_duplicates().sort_values()
+    )
+
+    checks = {}
+    rows = []
+    for definition, regime, labels in definitions:
+        aligned = regime.to_frame().reindex(entry_index, method="ffill")
+        check = verify_no_lookahead(
+            regime.shift(-1).to_frame(),
+            aligned,
+            "regime",
+            samples=max(len(entry_index), 1),
+        )
+        checks[definition] = check
+        if not check["clean"]:
+            raise RuntimeError(f"Look-ahead regime {definition}: {check}")
+
+        for tp_mode, trades in trades_by_tp.items():
+            tagged = tag_trades_with_regime(trades, regime)
+            for label in labels:
+                group = tagged[tagged["regime"] == label]
+                metrics = mt.basic_metrics(group)
+                ci = mt.wilson_edge_interval(group)
+                expectancy = metrics.get("expectancy_r")
+                ci_low = ci.get("wilson_ci_low")
+                n_trades = metrics["n_trades"]
+                rows.append({
+                    "definition": definition,
+                    "regime": label,
+                    "tp_mode": tp_mode,
+                    "n_trades": n_trades,
+                    "winrate": metrics.get("winrate"),
+                    "wilson_ci_low": ci_low,
+                    "wilson_ci_high": ci.get("wilson_ci_high"),
+                    "expectancy_r": expectancy,
+                    "profit_factor": metrics.get("profit_factor"),
+                    "max_dd": metrics.get("max_drawdown_pct"),
+                    "sample_ok": n_trades >= 50,
+                    "stat_edge": bool(
+                        n_trades >= 100
+                        and expectancy is not None and expectancy > 0
+                        and ci_low is not None and ci_low > 0
+                    ),
+                })
+    return pd.DataFrame(rows), checks
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=365)
@@ -228,6 +306,7 @@ def main():
     reports.add_argument("--tp-matrix", action="store_true")
     reports.add_argument("--mfe-report", action="store_true")
     reports.add_argument("--pa-breakdown", action="store_true")
+    reports.add_argument("--regime-report", action="store_true")
     args = ap.parse_args()
 
     cfg = Config()
@@ -282,6 +361,25 @@ def main():
             f"KẾT LUẬN: {worst['pa_type']} kéo nhóm xuống mạnh nhất "
             f"({worst['expectancy_r']:+.3f}R)."
         )
+        return
+
+    if args.regime_report:
+        report, checks = run_regime_report(args.symbols, args.days)
+        for name, check in checks.items():
+            print(
+                f"LOOK-AHEAD {name}: {check['violations']} vi phạm/"
+                f"{check['checked']} mẫu"
+            )
+        print(report.to_string(index=False))
+        verdict = (
+            "TÌM THẤY ỨNG VIÊN EDGE — PHẢI CHẠY T21"
+            if report["stat_edge"].any()
+            else "KHÔNG CÓ REGIME NÀO ĐẠT EDGE CÓ Ý NGHĨA THỐNG KÊ"
+        )
+        print(f"KẾT LUẬN: {verdict}")
+        out = Path("results")
+        out.mkdir(exist_ok=True)
+        report.to_csv(out / f"regime_report_{args.days}d.csv", index=False)
         return
 
     all_trades = []
