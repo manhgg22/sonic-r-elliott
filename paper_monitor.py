@@ -16,6 +16,8 @@ from data.loader import okx_usdt_swap_universe
 
 
 DB_PATH = Path("results/paper_trading.db")
+# Một lượt quét treo/crash sẽ tự nhả khoá sau ngần này để chu kỳ sau chạy tiếp.
+SCAN_LOCK_STALE_SECONDS = float(os.getenv("SONIC_SCAN_LOCK_STALE_SECONDS", "600"))
 SCAN_COLUMNS = [
     "rank", "name", "symbol", "base", "side", "status", "actionable",
     "signal_time", "bar_open", "bar_high", "bar_low", "bar_close",
@@ -74,9 +76,38 @@ def connect(db_path=DB_PATH):
             delta_r REAL NOT NULL DEFAULT 0, detail TEXT,
             FOREIGN KEY (trade_id) REFERENCES paper_trades(id)
         );
+        CREATE TABLE IF NOT EXISTS scan_lock (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            locked_at TEXT, holder TEXT
+        );
+        INSERT OR IGNORE INTO scan_lock (id, locked_at, holder)
+        VALUES (1, NULL, NULL);
         """
     )
     return conn
+
+
+def acquire_scan_lock(conn, holder=None):
+    """Khoá quét liên-tiến-trình qua SQLite: chỉ một lượt scan chạy tại một
+    thời điểm dù backend API và monitor nền là hai process khác nhau.
+    UPDATE có điều kiện + SQLite tuần tự hoá writer nên không có race."""
+    holder = holder or f"pid-{os.getpid()}"
+    now = pd.Timestamp.now(tz="UTC")
+    cutoff = (now - pd.Timedelta(seconds=SCAN_LOCK_STALE_SECONDS)).isoformat()
+    with conn:
+        cursor = conn.execute(
+            "UPDATE scan_lock SET locked_at=?, holder=? "
+            "WHERE id=1 AND (locked_at IS NULL OR locked_at < ?)",
+            (now.isoformat(), holder, cutoff),
+        )
+    return cursor.rowcount == 1
+
+
+def release_scan_lock(conn):
+    with conn:
+        conn.execute(
+            "UPDATE scan_lock SET locked_at=NULL, holder=NULL WHERE id=1"
+        )
 
 
 def _value(value):
@@ -296,13 +327,24 @@ def open_ready_trades(conn, report):
 
 
 def run_cycle(db_path=DB_PATH, progress=None):
-    started = time.monotonic()
-    universe = okx_usdt_swap_universe()
-    report = scan_market(universe, progress=progress)
-    duration = time.monotonic() - started
-    scanned_at = pd.Timestamp.now(tz="UTC")
     conn = connect(db_path)
+    if not acquire_scan_lock(conn):
+        open_count = conn.execute(
+            "SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'"
+        ).fetchone()[0]
+        conn.close()
+        logging.info("Bỏ qua lượt quét: đã có tiến trình khác đang quét.")
+        return {
+            "skipped": True, "coins": 0, "long_ready": 0, "short_ready": 0,
+            "errors": 0, "opened": 0, "open_positions": open_count,
+            "duration_seconds": 0.0,
+        }
     try:
+        started = time.monotonic()
+        universe = okx_usdt_swap_universe()
+        report = scan_market(universe, progress=progress)
+        duration = time.monotonic() - started
+        scanned_at = pd.Timestamp.now(tz="UTC")
         save_scan(conn, report, scanned_at, duration)
         manage_open_trades(conn, report)
         opened = open_ready_trades(conn, report)
@@ -310,9 +352,11 @@ def run_cycle(db_path=DB_PATH, progress=None):
             "SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'"
         ).fetchone()[0]
     finally:
+        release_scan_lock(conn)
         conn.close()
     ready = report[report["status"] == "READY"]
     summary = {
+        "skipped": False,
         "coins": int(report["symbol"].nunique()),
         "long_ready": int((ready["side"] == "LONG").sum()),
         "short_ready": int((ready["side"] == "SHORT").sum()),

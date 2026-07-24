@@ -1,0 +1,116 @@
+/* Softer Vietnamese-first typography system. */
+:root {
+  font-family: "Be Vietnam Pro", Arial, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  font-family: "Be Vietnam Pro", Arial, sans-serif !important;
+}
+
+html,
+body,
+#root {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+body {
+  font-weight: 400;
+}
+
+.panel-heading h2,
+.topbar > div:first-child b,
+.sidebar nav button,
+.kpi span {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.panel-heading h2 {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.topbar > div:first-child b {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.logo > span,
+.topbar > div:first-child span {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.panel-heading span,
+.health-strip,
+.table-foot,
+th {
+  font-size: 10px;
+  line-height: 1.45;
+  letter-spacing: 0;
+}
+
+td,
+.gate,
+.level,
+.watch-row,
+.mini-row,
+.ant-select,
+.ant-input,
+.ant-btn,
+.ant-segmented,
+.ant-tag {
+  font-size: 12px !important;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+
+th {
+  font-weight: 500;
+  text-transform: none;
+}
+
+td {
+  font-weight: 400;
+}
+
+.kpi strong,
+.side-title,
+.score,
+.risk-total strong,
+.level b,
+.watch-row b,
+td,
+.chart-meta {
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi strong,
+.risk-total strong {
+  font-weight: 600;
+}
+
+.side-title {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.level span,
+.kpi span,
+.panel-heading span {
+  color: #8ca0a6;
+}
+
+.ant-btn,
+.ant-input,
+.ant-select-selector,
+.ant-segmented {
+  font-weight: 500;
+}

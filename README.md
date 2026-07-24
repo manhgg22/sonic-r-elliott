@@ -41,10 +41,35 @@ duyệt và ghi scan, vị thế paper cùng mọi sự kiện vào SQLite.
 
 ```bash
 python paper_monitor.py
-streamlit run dashboard/signal_app.py
+uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+cd frontend
+npm install
+npm run dev
 ```
 
-Mở `http://localhost:8501`. Muốn thử đúng một lượt rồi thoát:
+Realtime market data is delivered through one shared backend connection:
+
+- OKX public WebSocket: tick prices for up to 50 configured instruments.
+- OKX business WebSocket: real M15 candle updates, including the live,
+  unconfirmed candle.
+- Sonic WebSocket endpoint: `ws://localhost:8000/api/v1/market/stream`.
+- Live WebSocket console: `http://localhost:8000/api/v1/market/console`.
+- Payload reference: [`docs/REALTIME_API.md`](docs/REALTIME_API.md).
+- Strategy decisions still use closed candles only; the live candle is for
+  monitoring and chart display.
+
+Optional environment variables:
+
+```bash
+OKX_WS_URL=wss://ws.okx.com:8443/ws/v5/public
+OKX_CANDLE_WS_URL=wss://ws.okx.com:8443/ws/v5/business
+SONIC_REALTIME_MAX_INSTRUMENTS=50
+SONIC_REALTIME_STALE_SECONDS=10
+```
+
+Khi phát triển, mở React tại `http://localhost:5173`. Khi chạy Docker Compose,
+mở production frontend tại `http://localhost:8501`. API và tài liệu OpenAPI
+chạy tại `http://localhost:8000/docs`. Muốn thử đúng một lượt rồi thoát:
 
 ```bash
 python paper_monitor.py --once
@@ -63,7 +88,8 @@ engine ưu tiên SL. Đây là OHLCV paper model, chưa tính funding/slippage/f
 
 ```bash
 docker compose up --build -d
-docker compose logs -f signal-center
+docker compose logs -f frontend
+docker compose logs -f backend
 docker compose logs -f paper-monitor
 ```
 
@@ -86,9 +112,12 @@ python run_backtest.py --days 1095 --tp fib_extension
 python run_backtest.py --symbols BTC/USDT ETH/USDT --tp sr_level
 ```
 
-**3. Dashboard tương tác:**
+**3. Analytical Terminal realtime (React + TypeScript + Ant Design):**
 ```bash
-streamlit run dashboard/app.py
+uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+cd frontend
+npm install
+npm run dev
 ```
 
 **4. Chẩn đoán funnel và sensitivity sweep:**
@@ -132,9 +161,18 @@ backtest/
   sweep.py        Sensitivity grid, gate đủ mẫu và đánh dấu tham số rìa
 data/
   loader.py       CoinGecko market cap + ccxt Binance/OKX, cache parquet
-dashboard/
-  app.py          Streamlit + Plotly
-  signal_app.py   Night Watch: scanner, paper positions, events và equity
+backend/
+  app/
+    api/                 FastAPI routers + dependencies
+    core/                Cấu hình môi trường
+    repositories/        Truy cập SQLite
+    schemas/             Hợp đồng Pydantic
+    services/            Nghiệp vụ dashboard + OKX
+frontend/
+  src/                   React + TypeScript + Ant Design Terminal B1-B5
+  package.json           Vite toolchain và frontend dependencies
+  nginx.conf             Production proxy REST + WebSocket
+  Dockerfile             Node build stage + Nginx runtime
 paper_monitor.py  Scheduler M15 + SQLite paper engine, không gửi lệnh thật
 sonic_r_elliott.pine   Indicator TradingView
 ```
