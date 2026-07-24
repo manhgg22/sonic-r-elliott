@@ -13,7 +13,8 @@ import plotly.express as px
 import streamlit as st
 
 from core.trade_setup import FILTER_LABELS, SHORT_FILTER_LABELS
-from paper_monitor import DB_PATH, connect, run_cycle, seconds_to_next_close
+from dashboard.backend import DashboardBackend
+from paper_monitor import DB_PATH, run_cycle, seconds_to_next_close
 
 
 VN_TZ = timezone(timedelta(hours=7))
@@ -23,16 +24,16 @@ STATUS_ORDER = {
 }
 FILTERS = ["f_trend", "f_breakout", "f_dow", "f_value_zone", "f_pa"]
 FILTER_NAMES = {
-    "f_trend": "EMA trend",
-    "f_breakout": "Breakout",
-    "f_dow": "Dow structure",
-    "f_value_zone": "Value Zone",
-    "f_pa": "Price Action",
+    "f_trend": "Xu hướng EMA",
+    "f_breakout": "Phá vỡ biên",
+    "f_dow": "Cấu trúc Dow",
+    "f_value_zone": "Vùng giá trị",
+    "f_pa": "Hành động giá",
 }
 
 st.set_page_config(
-    page_title="Sonic R · Trading Command Center",
-    page_icon="◈",
+    page_title="Sonic R · Bảng tín hiệu",
+    page_icon="S",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -247,6 +248,130 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Giao diện "bàn phân tích": sáng, phẳng và ưu tiên khả năng quét dữ liệu.
+st.markdown(
+    """
+    <style>
+    :root {
+      --bg:#f2f4f1; --panel:#ffffff; --panel-2:#f7f8f5;
+      --line:#d7dcd5; --muted:#667069; --text:#17201b;
+      --green:#087f5b; --red:#c92a2a; --cyan:#1769aa; --amber:#d97706;
+    }
+    .stApp { background:#f2f4f1; }
+    [data-testid="stHeader"] { background:#f2f4f1; }
+    [data-testid="stSidebar"] {
+      background:#ffffff; border-right:1px solid #d7dcd5;
+    }
+    .block-container { max-width:1680px; padding-top:1rem; }
+    p { color:#667069; }
+    .brand-mark {
+      color:#fff; background:#087f5b; box-shadow:none;
+      border-radius:3px;
+    }
+    .side-brand strong, .terminal-title h1, .section-head h2,
+    .asset-name, .play-step strong { color:#17201b; }
+    .side-brand span, .terminal-title p, .section-head .meta,
+    .card-time, .asset-symbol { color:#667069; }
+    .control-label, .eyebrow { color:#087f5b; }
+    .terminal-header {
+      border:0; border-radius:4px; background:#17201b;
+      box-shadow:none; padding:1rem 1.15rem;
+    }
+    .terminal-header .terminal-title h1 { color:#fff; }
+    .terminal-header .terminal-title p { color:#aeb8b1; }
+    .terminal-header .brand-mark {
+      color:#17201b; background:#d9f99d;
+    }
+    .terminal-header .eyebrow { color:#86efac; }
+    .live-pill {
+      border-radius:3px; color:#86efac;
+      border-color:#3f5e4d; background:#263a30;
+    }
+    .live-pill.offline {
+      color:#fecaca; border-color:#713f3f; background:#442727;
+    }
+    .context-strip {
+      border-radius:0; border-color:#cdd3cc; background:#cdd3cc;
+    }
+    .context-cell { background:#fff; }
+    .context-cell span { color:#78817b; }
+    .context-cell strong { color:#25302a; }
+    .metric-card {
+      min-height:88px; border-radius:3px; box-shadow:none;
+      background:#fff; border-color:#d7dcd5;
+    }
+    .metric-card .label, .metric-card .detail { color:#667069; }
+    .metric-card .value { color:#17201b; }
+    .signal-card, .position-card, .empty-card {
+      border-radius:3px; background:#fff; box-shadow:none;
+      border-color:#d7dcd5;
+    }
+    .level {
+      border-radius:2px; background:#f4f6f3; border-color:#e0e4df;
+    }
+    .level span { color:#737d76; }
+    .level strong { color:#17201b; }
+    .card-foot { color:#667069; border-color:#e0e4df; }
+    .side-pill { border-radius:2px; }
+    .play-step {
+      border-radius:3px; background:#fff; border-color:#d7dcd5;
+    }
+    div[data-baseweb="tab-list"] {
+      border-radius:3px; background:#fff; border-color:#d7dcd5;
+    }
+    button[data-baseweb="tab"] { border-radius:2px; color:#667069; }
+    button[data-baseweb="tab"][aria-selected="true"] {
+      color:#fff; background:#17201b;
+    }
+    .stButton button, .stDownloadButton button {
+      border-radius:3px; border-color:#bfc7c0;
+    }
+    .stButton button[kind="primary"] {
+      color:#fff; background:#087f5b;
+    }
+    .stButton button[kind="primary"] p { color:#fff !important; }
+    [data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {
+      border-radius:3px; border-color:#d7dcd5; background:#fff;
+    }
+    .live-grid {
+      display:grid; grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:.55rem; margin:.55rem 0 1rem;
+    }
+    .live-quote {
+      background:#17201b; border-left:3px solid #667069;
+      padding:.75rem .8rem; min-width:0;
+    }
+    .live-quote.up { border-left-color:#22c55e; }
+    .live-quote.down { border-left-color:#ef4444; }
+    .live-quote .quote-head {
+      display:flex; justify-content:space-between; gap:.5rem;
+      color:#aeb8b1; font-size:.66rem; font-weight:700;
+    }
+    .live-quote .quote-price {
+      color:#fff; font-size:1.08rem; font-weight:750;
+      margin:.4rem 0 .18rem; font-variant-numeric:tabular-nums;
+    }
+    .live-quote .quote-pnl {
+      font-size:.72rem; font-weight:750; font-variant-numeric:tabular-nums;
+    }
+    .live-quote.up .quote-pnl { color:#86efac; }
+    .live-quote.down .quote-pnl { color:#fca5a5; }
+    .live-stamp {
+      display:flex; align-items:center; gap:.4rem; color:#667069;
+      font-size:.66rem; margin-bottom:.35rem;
+    }
+    .live-stamp i {
+      width:7px; height:7px; border-radius:50%; background:#22c55e;
+      box-shadow:0 0 0 3px rgba(34,197,94,.14);
+    }
+    @media (max-width: 1100px) {
+      .live-grid { grid-template-columns:1fr 1fr; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 def price(value):
     if value is None or pd.isna(value):
@@ -285,50 +410,84 @@ def section_head(kicker, title, meta=""):
 
 def style_plot(fig, height=340):
     fig.update_layout(
-        template="plotly_dark",
+        template="plotly_white",
         height=height,
         margin=dict(l=16, r=16, t=22, b=16),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#8fa0b6", size=11),
+        font=dict(color="#667069", size=11),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1),
-        hoverlabel=dict(bgcolor="#101d2e", bordercolor="#26364b"),
+        hoverlabel=dict(bgcolor="#ffffff", bordercolor="#d7dcd5"),
     )
-    fig.update_xaxes(gridcolor="#182638", zerolinecolor="#182638")
-    fig.update_yaxes(gridcolor="#182638", zerolinecolor="#182638")
+    fig.update_xaxes(gridcolor="#e7ebe6", zerolinecolor="#d7dcd5")
+    fig.update_yaxes(gridcolor="#e7ebe6", zerolinecolor="#d7dcd5")
     return fig
+
+
+@st.cache_resource
+def get_backend(db_name):
+    return DashboardBackend(db_name)
+
+
+@st.fragment(run_every="2s")
+def live_position_quotes(open_positions, risk_per_trade):
+    """Định giá trực tiếp, không thay đổi trạng thái giao dịch trong SQLite."""
+    if open_positions.empty:
+        return
+
+    try:
+        backend = get_backend(str(DB_PATH))
+        live_positions = backend.live_positions(
+            open_positions.sort_values("opened_at", ascending=False),
+            backend.fetch_swap_prices(),
+        )
+    except (RuntimeError, ValueError, KeyError, OSError):
+        st.warning("Tạm thời chưa lấy được giá trực tiếp từ OKX. Dữ liệu nến M15 vẫn hoạt động.")
+        return
+
+    previous = st.session_state.setdefault("okx_previous_quotes", {})
+    cards = []
+    total_live_r = 0.0
+    for position in live_positions:
+        inst_id = position["inst_id"]
+        last = position["last"]
+        live_r = position["live_r"]
+        total_live_r += live_r
+        old = previous.get(inst_id, last)
+        side_class = "up" if live_r >= 0 else "down"
+        arrow = "▲" if last > old else "▼" if last < old else "•"
+        cards.append(
+            f'<div class="live-quote {side_class}">'
+            f'<div class="quote-head"><span>{escape(str(position["base"]))} · '
+            f'{escape(str(position["side"]))}</span><span>{arrow} OKX</span></div>'
+            f'<div class="quote-price">{price(last)}</div>'
+            f'<div class="quote-pnl">{live_r:+.2f}R · '
+            f'{live_r * risk_per_trade:+,.2f} USDT</div></div>'
+        )
+        previous[inst_id] = last
+
+    if not cards:
+        st.warning("OKX chưa trả về giá cho các hợp đồng đang mở.")
+        return
+
+    now = pd.Timestamp.now(tz=VN_TZ)
+    html = (
+        '<div class="live-stamp"><i></i>'
+        f'<span>Giá trực tiếp OKX · cập nhật mỗi 2 giây · {now:%H:%M:%S}</span>'
+        f'<strong>Danh mục {total_live_r:+.2f}R · '
+        f'{total_live_r * risk_per_trade:+,.2f} USDT</strong></div>'
+        f'<div class="live-grid">{"".join(cards)}</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=8, show_spinner=False)
 def load_data(db_name):
-    conn = connect(db_name)
-    try:
-        setups = pd.read_sql_query("SELECT * FROM latest_setups", conn)
-        runs = pd.read_sql_query(
-            "SELECT * FROM scan_runs ORDER BY id DESC LIMIT 96", conn
-        )
-        trades = pd.read_sql_query(
-            "SELECT * FROM paper_trades ORDER BY id DESC", conn
-        )
-        events = pd.read_sql_query(
-            "SELECT * FROM paper_events ORDER BY id DESC LIMIT 500", conn
-        )
-    finally:
-        conn.close()
-    for frame, columns in [
-        (setups, ["signal_time"]),
-        (runs, ["scanned_at"]),
-        (trades, ["opened_at", "last_bar_time", "closed_at"]),
-        (events, ["event_at"]),
-    ]:
-        for column in columns:
-            if column in frame:
-                frame[column] = pd.to_datetime(frame[column], utc=True, errors="coerce")
-    return setups, runs, trades, events
+    return get_backend(db_name).load()
 
 
 def run_manual_scan():
-    progress = st.progress(0, text="Đang tải universe OKX...")
+    progress = st.progress(0, text="Đang tải danh sách thị trường OKX...")
 
     def update(done, total):
         progress.progress(done / total, text=f"Đã quét {done}/{total} coin")
@@ -347,34 +506,34 @@ with st.sidebar:
         """
         <div class="side-brand">
           <div class="brand-mark">SR</div>
-          <div><strong>SONIC R</strong><br><span>EXECUTION DESK</span></div>
+          <div><strong>SONIC R</strong><br><span>BÀN TÍN HIỆU</span></div>
         </div>
-        <div class="control-label">RISK MODEL</div>
+        <div class="control-label">MÔ HÌNH RỦI RO</div>
         """,
         unsafe_allow_html=True,
     )
     capital = st.number_input(
-        "Paper capital · USDT", min_value=100.0, value=10_000.0, step=1_000.0
+        "Vốn mô phỏng · USDT", min_value=100.0, value=10_000.0, step=1_000.0
     )
-    risk_pct = st.slider("Risk per trade · %", 0.25, 1.0, 0.5, 0.25)
-    st.markdown('<div class="control-label">SIGNAL FILTERS</div>', unsafe_allow_html=True)
+    risk_pct = st.slider("Rủi ro mỗi lệnh · %", 0.25, 1.0, 0.5, 0.25)
+    st.markdown('<div class="control-label">BỘ LỌC TÍN HIỆU</div>', unsafe_allow_html=True)
     direction_filter = st.segmented_control(
-        "Direction", ["Tất cả", "LONG", "SHORT"], default="Tất cả"
+        "Hướng", ["Tất cả", "LONG", "SHORT"], default="Tất cả"
     )
     status_filter = st.multiselect(
-        "Setup state",
+        "Trạng thái thiết lập",
         ["READY", "WAIT_PA", "WAIT_PULLBACK", "NO_SETUP"],
         default=["READY", "WAIT_PA", "WAIT_PULLBACK"],
     )
-    coin_query = st.text_input("Asset search", placeholder="BTC, ETH, SOL...")
-    st.markdown('<div class="control-label">OPERATIONS</div>', unsafe_allow_html=True)
-    if st.button("RUN FULL SCAN", type="primary", width="stretch"):
+    coin_query = st.text_input("Tìm đồng coin", placeholder="BTC, ETH, SOL...")
+    st.markdown('<div class="control-label">THAO TÁC</div>', unsafe_allow_html=True)
+    if st.button("QUÉT TOÀN BỘ", type="primary", width="stretch"):
         run_manual_scan()
-    if st.button("REFRESH DATA", width="stretch"):
+    if st.button("LÀM MỚI DỮ LIỆU", width="stretch"):
         st.cache_data.clear()
         st.rerun()
     st.caption(
-        "Paper-only execution. Monitor runs independently when this page is closed."
+        "Chỉ mô phỏng, không đặt lệnh thật. Monitor vẫn chạy khi đóng trang."
     )
 
 setups, runs, trades, events = load_data(str(DB_PATH))
@@ -387,7 +546,7 @@ monitor_ok = age_minutes < 30
 next_close = pd.Timestamp.now(tz=VN_TZ) + timedelta(seconds=seconds_to_next_close())
 scan_text = (
     last_scan.tz_convert(VN_TZ).strftime("%d/%m/%Y · %H:%M:%S")
-    if pd.notna(last_scan) else "NO DATA"
+    if pd.notna(last_scan) else "CHƯA CÓ DỮ LIỆU"
 )
 risk_usd = capital * risk_pct / 100
 
@@ -397,24 +556,24 @@ st.markdown(
       <div class="terminal-title">
         <div class="brand-mark">SR</div>
         <div>
-          <div class="eyebrow">OKX PERPETUAL INTELLIGENCE</div>
-          <h1>Trading Command Center</h1>
-          <p>Multi-timeframe scanner · paper execution · portfolio telemetry</p>
+          <div class="eyebrow">BỘ QUÉT HỢP ĐỒNG VĨNH CỬU OKX</div>
+          <h1>Bảng điều khiển tín hiệu</h1>
+          <p>Quét đa khung thời gian · giao dịch mô phỏng · theo dõi danh mục</p>
         </div>
       </div>
       <div class="live-stack">
         <div class="live-pill {'online' if monitor_ok else 'offline'}">
           <span class="pulse-dot"></span>
-          {'MONITOR ONLINE' if monitor_ok else 'MONITOR STALE'}
+          {'MONITOR ĐANG CHẠY' if monitor_ok else 'DỮ LIỆU ĐÃ CŨ'}
         </div>
-        <small>Next M15 close · {next_close:%H:%M:%S} VN</small>
+        <small>Nến M15 tiếp theo · {next_close:%H:%M:%S} VN</small>
       </div>
     </div>
     <div class="context-strip">
-      <div class="context-cell"><span>Last synchronized</span><strong>{scan_text} VN</strong></div>
-      <div class="context-cell"><span>Execution mode</span><strong>PAPER · OHLCV</strong></div>
-      <div class="context-cell"><span>Risk allocation</span><strong>{risk_usd:,.2f} USDT / TRADE</strong></div>
-      <div class="context-cell"><span>Venue / cadence</span><strong>OKX · M15 CLOSE</strong></div>
+      <div class="context-cell"><span>Lần đồng bộ cuối</span><strong>{scan_text} VN</strong></div>
+      <div class="context-cell"><span>Chế độ thực thi</span><strong>MÔ PHỎNG · OHLCV</strong></div>
+      <div class="context-cell"><span>Rủi ro phân bổ</span><strong>{risk_usd:,.2f} USDT / LỆNH</strong></div>
+      <div class="context-cell"><span>Sàn / chu kỳ</span><strong>OKX · ĐÓNG NẾN M15</strong></div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -424,8 +583,8 @@ if setups.empty:
     st.markdown(
         """
         <div class="empty-card">
-          <strong>No scanner snapshot</strong>
-          Run a full scan or start <code>python paper_monitor.py</code>.
+          <strong>Chưa có dữ liệu quét</strong>
+          Hãy quét toàn bộ hoặc chạy <code>python paper_monitor.py</code>.
         </div>
         """,
         unsafe_allow_html=True,
@@ -446,42 +605,42 @@ data_errors = report.loc[report["status"] == "ERROR", "symbol"].nunique()
 
 metric_columns = st.columns(6)
 metric_card(
-    metric_columns[0], "Market universe", success["symbol"].nunique(),
-    "USDT perpetuals", CYAN,
+    metric_columns[0], "Thị trường", success["symbol"].nunique(),
+    "hợp đồng USDT", CYAN,
 )
 metric_card(
-    metric_columns[1], "Long ready", int((ready["side"] == "LONG").sum()),
-    "actionable now", GREEN,
+    metric_columns[1], "LONG sẵn sàng", int((ready["side"] == "LONG").sum()),
+    "có thể hành động", GREEN,
 )
 metric_card(
-    metric_columns[2], "Short ready", int((ready["side"] == "SHORT").sum()),
-    "actionable now", RED,
+    metric_columns[2], "SHORT sẵn sàng", int((ready["side"] == "SHORT").sum()),
+    "có thể hành động", RED,
 )
-metric_card(metric_columns[3], "Setup queue", len(waiting), "awaiting confirmation", "#fbbf24")
-metric_card(metric_columns[4], "Open exposure", len(open_trades), "paper positions", "#a78bfa")
+metric_card(metric_columns[3], "Đang chờ", len(waiting), "chờ xác nhận", "#d97706")
+metric_card(metric_columns[4], "Vị thế mở", len(open_trades), "lệnh mô phỏng", "#1769aa")
 metric_card(
-    metric_columns[5], "Data integrity", "PASS" if data_errors == 0 else data_errors,
-    "0 errors" if data_errors == 0 else "symbols degraded",
+    metric_columns[5], "Chất lượng dữ liệu", "TỐT" if data_errors == 0 else data_errors,
+    "không có lỗi" if data_errors == 0 else "mã bị lỗi",
     GREEN if data_errors == 0 else RED,
 )
 
 command, scanner, positions, history, method = st.tabs(
-    ["COMMAND CENTER", "SIGNAL MATRIX", "OPEN POSITIONS", "PERFORMANCE", "PLAYBOOK"]
+    ["TỔNG QUAN", "BỘ QUÉT", "VỊ THẾ MỞ", "HIỆU SUẤT", "PHƯƠNG PHÁP"]
 )
 
 with command:
     execution, state = st.columns([3, 2])
     with execution:
         section_head(
-            "EXECUTION QUEUE", "Actionable signals",
-            f"{len(ready)} setup(s) passed all 5 gates",
+            "DANH SÁCH HÀNH ĐỘNG", "Tín hiệu sẵn sàng",
+            f"{len(ready)} thiết lập vượt qua đủ 5 điều kiện",
         )
         if ready.empty:
             st.markdown(
                 """
                 <div class="empty-card">
-                  <strong>No executable setup</strong>
-                  The desk stays flat until a closed M15 candle passes all gates.
+                  <strong>Chưa có tín hiệu đủ điều kiện</strong>
+                  Hệ thống tiếp tục chờ đến khi một nến M15 đã đóng vượt qua đủ 5 điều kiện.
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -498,7 +657,7 @@ with command:
                 signal_time = row["signal_time"].tz_convert(VN_TZ)
                 side = row["side"].lower()
                 minimum = (
-                    f" · below min {row['min_contracts']:g}"
+                    f" · dưới mức tối thiểu {row['min_contracts']:g}"
                     if contracts < row["min_contracts"] else ""
                 )
                 signal_columns[index % 2].markdown(
@@ -511,14 +670,14 @@ with command:
                       <div class="asset-name">{escape(str(row['base']))}</div>
                       <div class="asset-symbol">{escape(str(row['symbol']))} · {escape(str(row['pa']).upper())}</div>
                       <div class="level-grid">
-                        <div class="level"><span>Entry</span><strong>{price(row['entry'])}</strong></div>
-                        <div class="level"><span>Stop · 1R</span><strong>{price(row['sl'])}</strong></div>
+                        <div class="level"><span>Điểm vào</span><strong>{price(row['entry'])}</strong></div>
+                        <div class="level"><span>Dừng lỗ · 1R</span><strong>{price(row['sl'])}</strong></div>
                         <div class="level"><span>TP1 · {row['tp1_rr']:.2f}R</span><strong>{price(row['tp1'])}</strong></div>
                         <div class="level"><span>TP2 · {row['tp2_rr']:.2f}R</span><strong>{price(row['tp2'])}</strong></div>
                       </div>
                       <div class="card-foot">
-                        <span>{contracts:g} contracts{escape(minimum)}</span>
-                        <span>{notional:,.0f} notional · {actual_risk:.2f} risk</span>
+                        <span>{contracts:g} hợp đồng{escape(minimum)}</span>
+                        <span>Giá trị {notional:,.0f} · rủi ro {actual_risk:.2f}</span>
                       </div>
                     </div>
                     """,
@@ -526,8 +685,8 @@ with command:
                 )
     with state:
         section_head(
-            "MARKET STATE", "Setup distribution",
-            f"{len(success):,} direction rows",
+            "TRẠNG THÁI THỊ TRƯỜNG", "Phân bổ thiết lập",
+            f"{len(success):,} dòng tín hiệu",
         )
         status_counts = (
             success["status"]
@@ -555,7 +714,7 @@ with command:
             marker=dict(line=dict(color="#07111f", width=2)),
         )
         fig.add_annotation(
-            text=f"<b>{len(success):,}</b><br><span>SETUPS</span>",
+            text=f"<b>{len(success):,}</b><br><span>THIẾT LẬP</span>",
             x=.5, y=.5, showarrow=False, font=dict(size=15, color="#dce7f5"),
         )
         style_plot(fig, 330)
@@ -564,7 +723,7 @@ with command:
 
     funnel_col, pulse_col = st.columns([3, 2])
     with funnel_col:
-        section_head("FILTER TELEMETRY", "Five-gate pass rate", "LONG vs SHORT")
+        section_head("BỘ LỌC", "Tỷ lệ vượt qua 5 điều kiện", "LONG so với SHORT")
         funnel = (
             success.groupby("side")[FILTERS].mean().mul(100).reset_index()
             .melt(id_vars="side", var_name="gate", value_name="pass_rate")
@@ -574,7 +733,7 @@ with command:
             funnel, x="pass_rate", y="gate", color="side", barmode="group",
             orientation="h", text_auto=".1f",
             color_discrete_map={"LONG": GREEN, "SHORT": RED},
-            labels={"gate": "", "pass_rate": "Pass rate · %", "side": ""},
+            labels={"gate": "", "pass_rate": "Tỷ lệ đạt · %", "side": ""},
         )
         fig.update_traces(textposition="outside", cliponaxis=False)
         style_plot(fig, 360)
@@ -582,16 +741,16 @@ with command:
         fig.update_yaxes(categoryorder="array", categoryarray=list(FILTER_NAMES.values())[::-1])
         st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     with pulse_col:
-        section_head("SCANNER PULSE", "Signals per scan", "last 96 cycles")
+        section_head("NHỊP QUÉT", "Tín hiệu qua từng lần quét", "96 chu kỳ gần nhất")
         if runs.empty:
-            st.markdown('<div class="empty-card">No scan history</div>', unsafe_allow_html=True)
+            st.markdown('<div class="empty-card">Chưa có lịch sử quét</div>', unsafe_allow_html=True)
         else:
             timeline = runs.sort_values("scanned_at").copy()
             timeline["Time"] = timeline["scanned_at"].dt.tz_convert(VN_TZ)
             fig = px.line(
                 timeline, x="Time", y=["long_ready", "short_ready"], markers=True,
                 color_discrete_map={"long_ready": GREEN, "short_ready": RED},
-                labels={"value": "Ready signals", "variable": "", "Time": ""},
+                labels={"value": "Tín hiệu sẵn sàng", "variable": "", "Time": ""},
             )
             fig.update_traces(line_width=2.2, marker_size=5)
             style_plot(fig, 360)
@@ -610,18 +769,18 @@ with scanner:
     view["Asset"] = view["base"] + "  ·  " + view["name"]
     view["State"] = view["status"].replace(
         {
-            "READY": "READY",
-            "WAIT_PA": "WAIT · PA",
-            "WAIT_PULLBACK": "WAIT · VALUE ZONE",
-            "NO_SETUP": "NO SETUP",
-            "ERROR": "DATA ERROR",
+            "READY": "SẴN SÀNG",
+            "WAIT_PA": "CHỜ · PA",
+            "WAIT_PULLBACK": "CHỜ · VÙNG GIÁ TRỊ",
+            "NO_SETUP": "CHƯA CÓ",
+            "ERROR": "LỖI DỮ LIỆU",
         }
     )
     view["Gate score"] = view[FILTERS].sum(axis=1)
     view["Last"] = view["bar_close"]
     section_head(
-        "SIGNAL MATRIX", "Full universe scanner",
-        f"{len(view)} rows visible · snapshot {scan_text} VN",
+        "MA TRẬN TÍN HIỆU", "Bộ quét toàn thị trường",
+        f"Đang hiển thị {len(view)} dòng · dữ liệu {scan_text} VN",
     )
     st.dataframe(
         view[
@@ -632,24 +791,24 @@ with scanner:
         height=690,
         column_config={
             "rank": st.column_config.NumberColumn("#", format="%d", width="small"),
-            "Asset": st.column_config.TextColumn("ASSET", width="medium"),
-            "side": st.column_config.TextColumn("SIDE", width="small"),
-            "State": st.column_config.TextColumn("SETUP STATE", width="medium"),
+            "Asset": st.column_config.TextColumn("TÀI SẢN", width="medium"),
+            "side": st.column_config.TextColumn("HƯỚNG", width="small"),
+            "State": st.column_config.TextColumn("TRẠNG THÁI", width="medium"),
             "Gate score": st.column_config.ProgressColumn(
-                "GATES", min_value=0, max_value=5, format="%d / 5", width="small"
+                "ĐIỀU KIỆN", min_value=0, max_value=5, format="%d / 5", width="small"
             ),
-            "Last": st.column_config.NumberColumn("LAST CLOSE", format="%.8f"),
-            "pa": st.column_config.TextColumn("PRICE ACTION"),
-            "missing": st.column_config.TextColumn("BLOCKER", width="large"),
+            "Last": st.column_config.NumberColumn("GIÁ ĐÓNG GẦN NHẤT", format="%.8f"),
+            "pa": st.column_config.TextColumn("HÀNH ĐỘNG GIÁ"),
+            "missing": st.column_config.TextColumn("ĐIỀU KIỆN CÒN THIẾU", width="large"),
         },
     )
     download, note = st.columns([1, 4])
     download.download_button(
-        "EXPORT SNAPSHOT", report.to_csv(index=False),
+        "XUẤT DỮ LIỆU CSV", report.to_csv(index=False),
         "sonic_r_okx_snapshot.csv", "text/csv", width="stretch",
     )
     note.caption(
-        "Gate score is diagnostic only. Execution still requires all five gates on a closed M15 candle."
+        "Điểm điều kiện chỉ dùng để chẩn đoán. Tín hiệu chỉ hợp lệ khi nến M15 đã đóng đạt đủ năm điều kiện."
     )
 
 with positions:
@@ -669,20 +828,25 @@ with positions:
     short_open = int((open_trades["side"] == "SHORT").sum()) if not open_trades.empty else 0
     total_float = open_trades["floating_r"].sum() if not open_trades.empty else 0.0
     exposure_metrics = st.columns(4)
-    metric_card(exposure_metrics[0], "Open positions", len(open_trades), "paper book", "#a78bfa")
-    metric_card(exposure_metrics[1], "Directional mix", f"{long_open}L / {short_open}S", "active exposure", CYAN)
+    metric_card(exposure_metrics[0], "Vị thế mở", len(open_trades), "sổ lệnh mô phỏng", "#1769aa")
+    metric_card(exposure_metrics[1], "Phân bổ hướng", f"{long_open}L / {short_open}S", "vị thế đang chạy", CYAN)
     metric_card(
-        exposure_metrics[2], "Mark-to-model", f"{total_float:+.2f}R",
+        exposure_metrics[2], "Lãi/lỗ tạm tính", f"{total_float:+.2f}R",
         f"{total_float * risk_usd:+,.2f} USDT", GREEN if total_float >= 0 else RED,
     )
     metric_card(
-        exposure_metrics[3], "Risk at entry", f"{len(open_trades) * risk_usd:,.2f}",
-        "USDT gross allocation", "#fbbf24",
+        exposure_metrics[3], "Rủi ro ban đầu", f"{len(open_trades) * risk_usd:,.2f}",
+        "USDT phân bổ gộp", "#d97706",
     )
-    section_head("PAPER BOOK", "Open execution ledger", "mark based on latest closed M15")
+    section_head(
+        "GIÁ TRỰC TIẾP", "Định giá vị thế theo OKX",
+        "chỉ hiển thị · không thay đổi quy tắc đóng lệnh",
+    )
+    live_position_quotes(open_trades, risk_usd)
+    section_head("SỔ LỆNH MÔ PHỎNG", "Các vị thế đang mở", "định giá theo nến M15 đã đóng gần nhất")
     if open_trades.empty:
         st.markdown(
-            '<div class="empty-card"><strong>Flat book</strong>No paper positions are open.</div>',
+            '<div class="empty-card"><strong>Chưa có vị thế</strong>Không có lệnh mô phỏng nào đang mở.</div>',
             unsafe_allow_html=True,
         )
     else:
@@ -714,10 +878,10 @@ with positions:
                     <div class="asset-name {pnl_class}">{trade['floating_r']:+.2f}R</div>
                   </div>
                   <div class="level-grid">
-                    <div class="level"><span>Mark</span><strong>{price(current)}</strong></div>
-                    <div class="level"><span>Entry</span><strong>{price(trade['entry'])}</strong></div>
-                    <div class="level"><span>Stop</span><strong>{price(trade['current_sl'])}</strong></div>
-                    <div class="level"><span>Trail H1</span><strong>{price(trade['trail_h1'])}</strong></div>
+                    <div class="level"><span>Giá hiện tại</span><strong>{price(current)}</strong></div>
+                    <div class="level"><span>Điểm vào</span><strong>{price(trade['entry'])}</strong></div>
+                    <div class="level"><span>Dừng lỗ</span><strong>{price(trade['current_sl'])}</strong></div>
+                    <div class="level"><span>Bám EMA H1</span><strong>{price(trade['trail_h1'])}</strong></div>
                     <div class="level"><span>TP1</span><strong>{tp1}</strong></div>
                     <div class="level"><span>TP2</span><strong>{tp2}</strong></div>
                     <div class="level"><span>MFE</span><strong>{trade['mfe_r']:+.2f}R</strong></div>
@@ -725,8 +889,8 @@ with positions:
                   </div>
                   <div class="progress-track"><div class="progress-fill" style="width:{closed_pct:.0f}%"></div></div>
                   <div class="card-foot">
-                    <span>{closed_pct:.0f}% realized</span>
-                    <span>{trade['realized_r']:+.2f}R booked · {trade['remaining']:.0%} remaining</span>
+                    <span>Đã chốt {closed_pct:.0f}%</span>
+                    <span>Đã ghi nhận {trade['realized_r']:+.2f}R · còn {trade['remaining']:.0%}</span>
                   </div>
                 </div>
                 """,
@@ -741,22 +905,22 @@ with history:
     )
     avg_r = closed_trades["total_r"].mean() if not closed_trades.empty else 0.0
     performance_metrics = st.columns(4)
-    metric_card(performance_metrics[0], "Closed trades", len(closed_trades), "paper sample", CYAN)
-    metric_card(performance_metrics[1], "Win rate", f"{winrate:.1f}%", "closed trades only", GREEN)
+    metric_card(performance_metrics[0], "Lệnh đã đóng", len(closed_trades), "mẫu mô phỏng", CYAN)
+    metric_card(performance_metrics[1], "Tỷ lệ thắng", f"{winrate:.1f}%", "chỉ tính lệnh đã đóng", GREEN)
     metric_card(
-        performance_metrics[2], "Net expectancy", f"{avg_r:+.2f}R",
-        f"total {total_r:+.2f}R", GREEN if avg_r >= 0 else RED,
+        performance_metrics[2], "Kỳ vọng ròng", f"{avg_r:+.2f}R",
+        f"tổng {total_r:+.2f}R", GREEN if avg_r >= 0 else RED,
     )
     metric_card(
-        performance_metrics[3], "Model P&L", f"{total_r * risk_usd:+,.2f}",
-        "USDT · fixed risk", GREEN if total_r >= 0 else RED,
+        performance_metrics[3], "Lãi/lỗ mô phỏng", f"{total_r * risk_usd:+,.2f}",
+        "USDT · rủi ro cố định", GREEN if total_r >= 0 else RED,
     )
     equity_col, events_col = st.columns([3, 2])
     with equity_col:
-        section_head("PERFORMANCE", "Paper equity curve", "fixed-risk model")
+        section_head("HIỆU SUẤT", "Đường vốn mô phỏng", "mô hình rủi ro cố định")
         if closed_trades.empty:
             st.markdown(
-                '<div class="empty-card"><strong>Awaiting exits</strong>Equity starts after the first paper trade closes.</div>',
+                '<div class="empty-card"><strong>Đang chờ đóng lệnh</strong>Đường vốn bắt đầu sau khi lệnh mô phỏng đầu tiên đóng.</div>',
                 unsafe_allow_html=True,
             )
         else:
@@ -770,9 +934,9 @@ with history:
             style_plot(fig, 350)
             st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     with events_col:
-        section_head("AUDIT TRAIL", "Execution events", f"latest {min(500, len(events))}")
+        section_head("NHẬT KÝ", "Sự kiện thực thi", f"{min(500, len(events))} sự kiện gần nhất")
         if events.empty:
-            st.markdown('<div class="empty-card">No execution events</div>', unsafe_allow_html=True)
+            st.markdown('<div class="empty-card">Chưa có sự kiện thực thi</div>', unsafe_allow_html=True)
         else:
             event_view = events.merge(
                 trades[["id", "symbol", "side"]],
@@ -783,14 +947,14 @@ with history:
                 event_view[["Time", "symbol", "side", "event", "price", "delta_r"]],
                 hide_index=True, width="stretch", height=350,
                 column_config={
-                    "Time": st.column_config.DatetimeColumn("TIME · VN", format="DD/MM HH:mm"),
-                    "symbol": "SYMBOL", "side": "SIDE", "event": "EVENT",
-                    "price": st.column_config.NumberColumn("PRICE", format="%.8f"),
-                    "delta_r": st.column_config.NumberColumn("DELTA", format="%+.2fR"),
+                    "Time": st.column_config.DatetimeColumn("THỜI GIAN · VN", format="DD/MM HH:mm"),
+                    "symbol": "MÃ", "side": "HƯỚNG", "event": "SỰ KIỆN",
+                    "price": st.column_config.NumberColumn("GIÁ", format="%.8f"),
+                    "delta_r": st.column_config.NumberColumn("THAY ĐỔI", format="%+.2fR"),
                 },
             )
     if not closed_trades.empty:
-        section_head("TRADE LEDGER", "Closed positions", f"{len(closed_trades)} records")
+        section_head("SỔ GIAO DỊCH", "Các vị thế đã đóng", f"{len(closed_trades)} bản ghi")
         st.dataframe(
             closed_trades[
                 [
@@ -803,15 +967,15 @@ with history:
 
 with method:
     section_head(
-        "SYSTEM PLAYBOOK", "From market context to execution",
-        "fixed logic · closed candles only",
+        "QUY TRÌNH HỆ THỐNG", "Từ bối cảnh thị trường đến điểm vào",
+        "logic cố định · chỉ dùng nến đã đóng",
     )
     steps = [
-        ("01", "EMA regime", "H1 EMA34/89 defines the permitted direction."),
-        ("02", "Range break", "20-bar breakout remains valid for 30 H1 candles."),
-        ("03", "Dow structure", "LONG needs HH/HL; SHORT mirrors with LL/LH."),
-        ("04", "Value Zone", "Price retraces into the Sonic R EMA band."),
-        ("05", "M15 trigger", "Closed engulfing or pinbar authorizes entry."),
+        ("01", "Xu hướng EMA", "EMA34/89 trên H1 xác định hướng giao dịch được phép."),
+        ("02", "Phá vỡ biên", "Phá vỡ biên 20 nến có hiệu lực trong 30 nến H1."),
+        ("03", "Cấu trúc Dow", "LONG cần HH/HL; SHORT cần LL/LH."),
+        ("04", "Vùng giá trị", "Giá hồi về vùng EMA của Sonic R."),
+        ("05", "Kích hoạt M15", "Nến engulfing hoặc pinbar đã đóng xác nhận điểm vào."),
     ]
     cards = "".join(
         f'<div class="play-step"><div class="num">{number}</div>'
@@ -822,27 +986,27 @@ with method:
 
     execution_rule, controls = st.columns(2)
     with execution_rule:
-        section_head("EXECUTION MODEL", "Position lifecycle")
+        section_head("MÔ HÌNH THỰC THI", "Vòng đời vị thế")
         st.markdown(
             """
-            - Enter at the confirming M15 close; never chase an intrabar signal.
-            - Initial stop uses the 5-bar swing / EMA89 plus a 0.5 ATR buffer.
-            - TP1 realizes 50%, then the remaining stop moves to breakeven.
-            - TP2 realizes another 30%; the final 20% follows the H1 EMA34 trail.
-            - If SL and TP touch in the same candle, the simulator resolves SL first.
+            - Vào tại giá đóng của nến M15 xác nhận; không dùng tín hiệu khi nến chưa đóng.
+            - Dừng lỗ ban đầu dùng swing 5 nến hoặc EMA89 cộng vùng đệm 0,5 ATR.
+            - TP1 chốt 50%, sau đó dời dừng lỗ phần còn lại về hòa vốn.
+            - TP2 chốt thêm 30%; 20% cuối bám theo EMA34 trên H1.
+            - Nếu SL và TP cùng chạm trong một nến, mô phỏng ưu tiên xử lý SL.
             """
         )
     with controls:
-        section_head("RISK CONTROLS", "What this terminal will not do")
+        section_head("KIỂM SOÁT RỦI RO", "Giới hạn của hệ thống")
         st.markdown(
             """
-            - No exchange credentials and no live order submission.
-            - No entry from an unfinished M15 or H1 candle.
-            - No hidden parameter tuning after observing a favorable result.
-            - Paper P&L excludes funding, slippage and real fill latency.
-            - A READY signal is a model event, not a promise of profit.
+            - Không lưu thông tin đăng nhập sàn và không gửi lệnh thật.
+            - Không vào lệnh từ nến M15 hoặc H1 chưa hoàn tất.
+            - Không tinh chỉnh tham số sau khi đã quan sát kết quả thuận lợi.
+            - Lãi/lỗ mô phỏng chưa tính funding, trượt giá và độ trễ khớp lệnh thật.
+            - Tín hiệu SẴN SÀNG là kết quả mô hình, không phải cam kết lợi nhuận.
             """
         )
-    with st.expander("Exact gate definitions"):
+    with st.expander("Định nghĩa chính xác của từng điều kiện"):
         st.write("**LONG:** " + " → ".join(FILTER_LABELS.values()))
         st.write("**SHORT:** " + " → ".join(SHORT_FILTER_LABELS.values()))
