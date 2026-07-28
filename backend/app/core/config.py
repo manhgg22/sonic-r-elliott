@@ -11,6 +11,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 class Settings:
     api_prefix = "/api/v1"
+    database_url = (
+        os.getenv("SONIC_DATABASE_URL", "").strip()
+        or os.getenv("DATABASE_URL", "").strip()
+    )
     database_path = Path(os.getenv("SONIC_DB_PATH", "results/paper_trading.db"))
     okx_base_url = os.getenv("OKX_BASE_URL", "https://www.okx.com")
     request_timeout = float(os.getenv("OKX_TIMEOUT_SECONDS", "5"))
@@ -39,6 +43,10 @@ class Settings:
     cookie_secure = _env_bool("SONIC_COOKIE_SECURE", False)
     login_max_attempts = int(os.getenv("SONIC_LOGIN_MAX_ATTEMPTS", "5"))
     login_window_seconds = int(os.getenv("SONIC_LOGIN_WINDOW_SECONDS", "300"))
+
+    @property
+    def database_target(self) -> str | Path:
+        return self.database_url or self.database_path
 
     @property
     def auth_configuration_error(self) -> str | None:

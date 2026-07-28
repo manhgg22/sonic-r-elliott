@@ -59,7 +59,8 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 Monitor quét toàn bộ perpetual USDT crypto active trên OKX sau mỗi lần nến
 M15 đóng. Sản phẩm stock/commodity tokenized bị loại bằng `instCategory`, nên
 universe chỉ gồm coin có thể LONG và SHORT. Monitor chạy độc lập với trình
-duyệt và ghi scan, vị thế paper cùng mọi sự kiện vào SQLite.
+duyệt và ghi scan, vị thế paper cùng mọi sự kiện vào SQLite ở local hoặc
+PostgreSQL khi có `DATABASE_URL`.
 
 ```bash
 python paper_monitor.py
@@ -126,17 +127,45 @@ FE, REST và WebSocket trên cùng cổng `8000`. Supervisor chạy thêm paper 
 trong cùng Reserved VM.
 
 1. Import repo GitHub `https://github.com/manhgg22/sonic-r-elliott`.
-2. Trong Secrets, thêm `SONIC_ADMIN_USERNAME`, `SONIC_ADMIN_PASSWORD`,
+2. Mở **All tools → Database** và tạo Replit PostgreSQL. Replit tự cấp secret
+   `DATABASE_URL`; không chép URL này vào source hoặc chat.
+3. Trong Secrets, thêm `SONIC_ADMIN_USERNAME`, `SONIC_ADMIN_PASSWORD`,
    `SONIC_SESSION_SECRET`, `SONIC_COOKIE_SECURE=true` và
    `SONIC_RUN_MONITOR=true`.
-3. Bấm **Run** và kiểm tra Preview.
-4. Trong Publishing, chọn **Reserved VM**, không chọn Autoscale, rồi Publish.
+4. Bấm **Run** và kiểm tra Preview.
+5. Trong Publishing, chọn **Reserved VM**, không chọn Autoscale, rồi Publish.
 
-SQLite trong `results/` chỉ phù hợp public test vì filesystem deployment có
-thể reset khi republish. Muốn giữ lịch sử paper lâu dài cần chuyển repository
-sang Replit SQL Database/PostgreSQL trước.
+Ứng dụng ưu tiên `SONIC_DATABASE_URL`, sau đó `DATABASE_URL`, và chỉ fallback
+về `SONIC_DB_PATH` khi không có PostgreSQL. Vì vậy local vẫn chạy SQLite, còn
+Replit lưu lịch sử bền vững trong PostgreSQL.
 
-Cache thị trường được giữ tại `data/cache/`, SQLite và log tại `results/`.
+#### Nhập lịch sử SQLite cũ
+
+Tạo một snapshot nhất quán tại máy local:
+
+```bash
+python tools/create_sqlite_snapshot.py
+```
+
+File cần upload lên Replit là `results/import/paper_trading.db`. Trước khi
+nhập, tạm đặt `SONIC_RUN_MONITOR=false` và dừng app để scanner không ghi đồng
+thời. Trong Replit Shell chạy:
+
+```bash
+python tools/migrate_sqlite_to_postgres.py \
+  results/import/paper_trading.db --dry-run
+python tools/migrate_sqlite_to_postgres.py \
+  results/import/paper_trading.db --replace
+```
+
+Migration chạy trong một transaction, kiểm tra khóa ngoại và đối chiếu số dòng
+trước khi commit. Với snapshot hiện tại, kết quả đúng là 29 `scan_runs`, 546
+`latest_setups`, 67 `paper_trades` và 122 `paper_events`. Sau đó bật lại
+`SONIC_RUN_MONITOR=true`. Khi Republish, chọn tạo Production Database và sao
+chép dữ liệu Development hiện tại nếu Replit hiển thị tùy chọn đó.
+
+Cache thị trường được giữ tại `data/cache/`; SQLite local và log nằm trong
+`results/`.
 Không mở cổng 8501 ra Internet công khai nếu chưa đặt ứng dụng sau lớp
 xác thực/reverse proxy.
 
@@ -208,7 +237,8 @@ backend/
   app/
     api/                 FastAPI routers + dependencies
     core/                Cấu hình môi trường
-    repositories/        Truy cập SQLite
+    repositories/        Truy cập SQLite/PostgreSQL
+    storage/             Kết nối, schema và tương thích hai database
     schemas/             Hợp đồng Pydantic
     services/            Nghiệp vụ dashboard + OKX
 frontend/
@@ -216,7 +246,7 @@ frontend/
   package.json           Vite toolchain và frontend dependencies
   nginx.conf             Production proxy REST + WebSocket
   Dockerfile             Node build stage + Nginx runtime
-paper_monitor.py  Scheduler M15 + SQLite paper engine, không gửi lệnh thật
+paper_monitor.py  Scheduler M15 + paper engine bền vững, không gửi lệnh thật
 sonic_r_elliott.pine   Indicator TradingView
 ```
 

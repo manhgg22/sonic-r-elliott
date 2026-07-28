@@ -30,6 +30,12 @@ def _start(command: list[str]) -> subprocess.Popen:
     return subprocess.Popen(command, cwd=ROOT)
 
 
+def _monitor_command() -> list[str]:
+    # paper_monitor resolves DATABASE_URL first on Replit and falls back to
+    # SONIC_DB_PATH for local/SQLite runs.
+    return [sys.executable, "paper_monitor.py"]
+
+
 def main() -> int:
     if not FRONTEND_INDEX.is_file():
         print(
@@ -77,12 +83,7 @@ def main() -> int:
 
     monitor: subprocess.Popen | None = None
     if monitor_enabled:
-        monitor = _start([
-            sys.executable,
-            "paper_monitor.py",
-            "--db",
-            os.getenv("SONIC_DB_PATH", "results/paper_trading.db"),
-        ])
+        monitor = _start(_monitor_command())
         processes.append(monitor)
         print("Replit supervisor: web + paper monitor.")
     else:
@@ -99,14 +100,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 time.sleep(5)
-                monitor = _start([
-                    sys.executable,
-                    "paper_monitor.py",
-                    "--db",
-                    os.getenv(
-                        "SONIC_DB_PATH", "results/paper_trading.db"
-                    ),
-                ])
+                monitor = _start(_monitor_command())
                 processes[-1] = monitor
             time.sleep(1)
     finally:

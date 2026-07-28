@@ -17,7 +17,7 @@ from paper_monitor import connect
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    database = connect(settings.database_path)
+    database = connect(settings.database_target)
     database.close()
     hub = realtime_market_hub()
     await hub.start()

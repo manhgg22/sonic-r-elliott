@@ -5,12 +5,16 @@ import json
 import logging
 import math
 import os
-import sqlite3
 import time
 from pathlib import Path
 
 import pandas as pd
 
+from backend.app.storage.database import (
+    connect_database,
+    resolve_database_target,
+    scalar,
+)
 from core.signal_scanner import scan_market
 from data.loader import okx_usdt_swap_universe
 
@@ -42,134 +46,19 @@ SCAN_COLUMNS = [
 ]
 
 
-def connect(db_path=DB_PATH):
-    path = Path(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS scan_runs (
-            id INTEGER PRIMARY KEY,
-            scanned_at TEXT NOT NULL,
-            universe_count INTEGER NOT NULL,
-            success_count INTEGER NOT NULL,
-            long_ready INTEGER NOT NULL,
-            short_ready INTEGER NOT NULL,
-            wait_count INTEGER NOT NULL,
-            error_count INTEGER NOT NULL,
-            duration_seconds REAL NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS latest_setups (
-            rank INTEGER, name TEXT, symbol TEXT, base TEXT, side TEXT,
-            status TEXT, actionable INTEGER, signal_time TEXT,
-            bar_open REAL, bar_high REAL, bar_low REAL, bar_close REAL,
-            entry REAL, sl REAL, tp1 REAL, tp2 REAL, tp1_rr REAL, tp2_rr REAL,
-            trail_h1 REAL, pa TEXT, missing TEXT, f_trend INTEGER,
-            f_regime INTEGER, f_session INTEGER, f_breakout INTEGER,
-            f_dow INTEGER, f_value_zone INTEGER, f_pa INTEGER,
-            session TEXT, adx REAL, separation REAL, ema200_aligned INTEGER,
-            pva_state TEXT, pva_ratio REAL, pva_rising INTEGER,
-            pva_climax INTEGER, entry_model TEXT,
-            contract_size REAL, amount_step REAL,
-            min_contracts REAL, PRIMARY KEY (symbol, side)
-        );
-        CREATE TABLE IF NOT EXISTS paper_trades (
-            id INTEGER PRIMARY KEY,
-            signal_key TEXT NOT NULL UNIQUE,
-            symbol TEXT NOT NULL, base TEXT, name TEXT, side TEXT NOT NULL,
-            status TEXT NOT NULL, opened_at TEXT NOT NULL,
-            entry REAL NOT NULL, initial_sl REAL NOT NULL,
-            current_sl REAL NOT NULL, tp1 REAL NOT NULL, tp2 REAL NOT NULL,
-            tp1_rr REAL NOT NULL, tp2_rr REAL NOT NULL, trail_h1 REAL,
-            risk REAL NOT NULL, remaining REAL NOT NULL DEFAULT 1,
-            realized_r REAL NOT NULL DEFAULT 0, tp1_hit INTEGER NOT NULL DEFAULT 0,
-            tp2_hit INTEGER NOT NULL DEFAULT 0, last_bar_time TEXT NOT NULL,
-            mfe_r REAL NOT NULL DEFAULT 0, mae_r REAL NOT NULL DEFAULT 0,
-            risk_pct REAL NOT NULL DEFAULT 0.5, expires_at TEXT,
-            filled_at TEXT, closed_at TEXT, exit_price REAL,
-            exit_reason TEXT, total_r REAL
-        );
-        CREATE TABLE IF NOT EXISTS paper_events (
-            id INTEGER PRIMARY KEY, trade_id INTEGER NOT NULL,
-            event_at TEXT NOT NULL, event TEXT NOT NULL, price REAL,
-            delta_r REAL NOT NULL DEFAULT 0, detail TEXT,
-            FOREIGN KEY (trade_id) REFERENCES paper_trades(id)
-        );
-        CREATE TABLE IF NOT EXISTS scan_lock (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            locked_at TEXT, holder TEXT
-        );
-        INSERT OR IGNORE INTO scan_lock (id, locked_at, holder)
-        VALUES (1, NULL, NULL);
-        """
+def connect(db_target=None):
+    return connect_database(
+        db_target,
+        risk_pct_per_trade=RISK_PCT_PER_TRADE,
     )
-    existing = {
-        row[1] for row in conn.execute("PRAGMA table_info(latest_setups)").fetchall()
-    }
-    migrations = {
-        "f_regime": "INTEGER",
-        "f_session": "INTEGER",
-        "session": "TEXT",
-        "adx": "REAL",
-        "separation": "REAL",
-        "ema200_aligned": "INTEGER",
-        "pva_state": "TEXT",
-        "pva_ratio": "REAL",
-        "pva_rising": "INTEGER",
-        "pva_climax": "INTEGER",
-        "entry_model": "TEXT",
-    }
-    for column, sql_type in migrations.items():
-        if column not in existing:
-            conn.execute(
-                f"ALTER TABLE latest_setups ADD COLUMN {column} {sql_type}"
-            )
-    trade_columns = {
-        row[1] for row in conn.execute("PRAGMA table_info(paper_trades)").fetchall()
-    }
-    trade_migrations = {
-        "risk_pct": f"REAL NOT NULL DEFAULT {RISK_PCT_PER_TRADE}",
-        "expires_at": "TEXT",
-        "filled_at": "TEXT",
-    }
-    for column, sql_type in trade_migrations.items():
-        if column not in trade_columns:
-            conn.execute(
-                f"ALTER TABLE paper_trades ADD COLUMN {column} {sql_type}"
-            )
-    # Dữ liệu legacy dùng event OPEN làm thời điểm khớp. Backfill một lần,
-    # không thay đổi opened_at vì trường đó nay được hiểu là lúc setup ARMED.
-    conn.execute(
-        """
-        UPDATE paper_trades
-        SET filled_at = (
-            SELECT MIN(event_at)
-            FROM paper_events
-            WHERE paper_events.trade_id = paper_trades.id
-              AND paper_events.event IN ('FILL', 'OPEN')
-        )
-        WHERE filled_at IS NULL
-          AND EXISTS (
-            SELECT 1 FROM paper_events
-            WHERE paper_events.trade_id = paper_trades.id
-              AND paper_events.event IN ('FILL', 'OPEN')
-          )
-        """
-    )
-    conn.commit()
-    return conn
 
 
 def acquire_scan_lock(conn, holder=None):
-    """Khoá quét liên-tiến-trình qua SQLite: chỉ một lượt scan chạy tại một
-    thời điểm dù backend API và monitor nền là hai process khác nhau.
-    UPDATE có điều kiện + SQLite tuần tự hoá writer nên không có race."""
+    """Khoá liên tiến trình bằng UPDATE nguyên tử trên SQLite/PostgreSQL."""
     holder = holder or f"pid-{os.getpid()}"
     now = pd.Timestamp.now(tz="UTC")
     cutoff = (now - pd.Timedelta(seconds=SCAN_LOCK_STALE_SECONDS)).isoformat()
-    with conn:
+    with conn.transaction():
         cursor = conn.execute(
             "UPDATE scan_lock SET locked_at=?, holder=? "
             "WHERE id=1 AND (locked_at IS NULL OR locked_at < ?)",
@@ -179,7 +68,7 @@ def acquire_scan_lock(conn, holder=None):
 
 
 def release_scan_lock(conn):
-    with conn:
+    with conn.transaction():
         conn.execute(
             "UPDATE scan_lock SET locked_at=NULL, holder=NULL WHERE id=1"
         )
@@ -225,7 +114,7 @@ def save_scan(conn, report, scanned_at, duration):
         for row in report.to_dict("records")
     ]
     placeholders = ",".join("?" for _ in SCAN_COLUMNS)
-    with conn:
+    with conn.transaction():
         conn.execute("DELETE FROM latest_setups")
         conn.executemany(
             f"INSERT INTO latest_setups ({','.join(SCAN_COLUMNS)}) "
@@ -342,7 +231,7 @@ def manage_open_trades(conn, report):
         for row in report.to_dict("records")
         if row.get("status") != "ERROR" and pd.notna(row.get("signal_time"))
     }
-    with conn:
+    with conn.transaction():
         for stored in conn.execute(
             "SELECT * FROM paper_trades WHERE status IN ('PENDING', 'OPEN')"
         ).fetchall():
@@ -434,14 +323,14 @@ def manage_open_trades(conn, report):
 def open_ready_trades(conn, report):
     opened = 0
     ready = report[(report["status"] == "READY") & report["actionable"].astype(bool)]
-    with conn:
+    with conn.transaction():
         week_cutoff = (
             pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
         ).isoformat()
-        opened_this_week = conn.execute(
+        opened_this_week = scalar(conn.execute(
             "SELECT COUNT(*) FROM paper_trades WHERE opened_at >= ?",
             (week_cutoff,),
-        ).fetchone()[0]
+        ))
         active_trades = conn.execute(
             "SELECT * FROM paper_trades "
             "WHERE status IN ('PENDING', 'OPEN')"
@@ -469,13 +358,15 @@ def open_ready_trades(conn, report):
             ).isoformat()
             cursor = conn.execute(
                 """
-                INSERT OR IGNORE INTO paper_trades (
+                INSERT INTO paper_trades (
                     signal_key, symbol, base, name, side, status, opened_at,
                     entry, initial_sl, current_sl, tp1, tp2, tp1_rr, tp2_rr,
                     trail_h1, risk, remaining, realized_r, tp1_hit, tp2_hit,
                     last_bar_time, mfe_r, mae_r, risk_pct, expires_at
                 ) VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?,
                           ?, 1, 0, 0, 0, ?, 0, 0, ?, ?)
+                ON CONFLICT (signal_key) DO NOTHING
+                RETURNING id
                 """,
                 (
                     key, row["symbol"], row.get("base"), row.get("name"),
@@ -486,12 +377,16 @@ def open_ready_trades(conn, report):
                     RISK_PCT_PER_TRADE, expires_at,
                 ),
             )
-            if cursor.rowcount:
+            inserted = cursor.fetchone()
+            if inserted:
+                trade_id = (
+                    inserted["id"] if isinstance(inserted, dict) else inserted[0]
+                )
                 opened += 1
                 opened_this_week += 1
                 committed_risk += RISK_PCT_PER_TRADE
                 _record_event(
-                    conn, cursor.lastrowid, signal_time, "ARMED", float(row["entry"]), 0,
+                    conn, trade_id, signal_time, "ARMED", float(row["entry"]), 0,
                     json.dumps(
                         {"sl": row["sl"], "tp1": row["tp1"], "tp2": row["tp2"]},
                         ensure_ascii=False,
@@ -500,12 +395,12 @@ def open_ready_trades(conn, report):
     return opened
 
 
-def run_cycle(db_path=DB_PATH, progress=None):
-    conn = connect(db_path)
+def run_cycle(db_target=None, progress=None):
+    conn = connect(db_target)
     if not acquire_scan_lock(conn):
-        open_count = conn.execute(
+        open_count = scalar(conn.execute(
             "SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'"
-        ).fetchone()[0]
+        ))
         conn.close()
         logging.info("Bỏ qua lượt quét: đã có tiến trình khác đang quét.")
         return {
@@ -522,9 +417,9 @@ def run_cycle(db_path=DB_PATH, progress=None):
         save_scan(conn, report, scanned_at, duration)
         manage_open_trades(conn, report)
         opened = open_ready_trades(conn, report)
-        open_count = conn.execute(
+        open_count = scalar(conn.execute(
             "SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'"
-        ).fetchone()[0]
+        ))
     finally:
         release_scan_lock(conn)
         conn.close()
@@ -552,30 +447,40 @@ def seconds_to_next_close(now=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="Chạy đúng một lượt")
-    parser.add_argument("--db", default=str(DB_PATH))
+    parser.add_argument(
+        "--db",
+        default=None,
+        help=(
+            "SQLite path or PostgreSQL URL. Mặc định dùng DATABASE_URL trên "
+            "Replit, nếu không có thì dùng SONIC_DB_PATH."
+        ),
+    )
     args = parser.parse_args()
 
-    db_path = Path(args.db)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_target = resolve_database_target(args.db)
+    log_path = Path(
+        os.getenv("SONIC_MONITOR_LOG_PATH", "results/paper_monitor.log")
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(db_path.with_name("paper_monitor.log"), encoding="utf-8"),
+            logging.FileHandler(log_path, encoding="utf-8"),
         ],
     )
     if args.once:
-        run_cycle(db_path)
+        run_cycle(db_target)
         return
 
-    pid_path = db_path.with_name("paper_monitor.pid")
+    pid_path = log_path.with_name("paper_monitor.pid")
     pid_path.write_text(str(os.getpid()), encoding="utf-8")
     logging.info("Paper monitor PID %s; chỉ mô phỏng, không gửi lệnh thật.", os.getpid())
     try:
         while True:
             try:
-                run_cycle(db_path)
+                run_cycle(db_target)
             except Exception:
                 logging.exception("Chu kỳ lỗi; monitor sẽ tiếp tục ở nến sau.")
             delay = seconds_to_next_close()

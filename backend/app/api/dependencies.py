@@ -9,7 +9,7 @@ from backend.app.services.realtime_market import RealtimeMarketHub
 
 @lru_cache
 def dashboard_service():
-    repository = TradingRepository(settings.database_path)
+    repository = TradingRepository(settings.database_target)
     market = OkxMarketService(settings.okx_base_url, settings.request_timeout)
     return DashboardService(repository, market)
 

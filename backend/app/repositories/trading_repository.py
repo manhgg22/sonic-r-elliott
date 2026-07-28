@@ -1,40 +1,51 @@
-import sqlite3
 from pathlib import Path
+
+from backend.app.storage.database import connect_database
 
 
 class TradingRepository:
-    def __init__(self, database_path: Path):
-        self.database_path = database_path
+    def __init__(self, database_target: str | Path):
+        self.database_target = database_target
+        # Kept as a compatibility alias for DashboardService/run_cycle.
+        self.database_path = database_target
 
     def _connect(self):
-        connection = sqlite3.connect(self.database_path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        return connection
+        return connect_database(self.database_target, initialize=False)
+
+    @staticmethod
+    def _rows(connection, sql, parameters=()):
+        return [dict(row) for row in connection.execute(sql, parameters)]
 
     def _query(self, sql, parameters=()):
         with self._connect() as connection:
-            return [dict(row) for row in connection.execute(sql, parameters)]
+            return self._rows(connection, sql, parameters)
 
     def snapshot(self):
-        return {
-            "setups": self._query("SELECT * FROM latest_setups"),
-            "runs": self._query(
-                "SELECT * FROM scan_runs ORDER BY id DESC LIMIT 96"
-            ),
-            "trades": self._query(
-                "SELECT * FROM paper_trades ORDER BY id DESC"
-            ),
-            "events": self._query(
-                """
-                SELECT
-                    e.*, t.symbol, t.base, t.side
-                FROM paper_events AS e
-                JOIN paper_trades AS t ON t.id = e.trade_id
-                ORDER BY e.id DESC
-                LIMIT 500
-                """
-            ),
-        }
+        with self._connect() as connection:
+            return {
+                "setups": self._rows(
+                    connection, "SELECT * FROM latest_setups"
+                ),
+                "runs": self._rows(
+                    connection,
+                    "SELECT * FROM scan_runs ORDER BY id DESC LIMIT 96",
+                ),
+                "trades": self._rows(
+                    connection,
+                    "SELECT * FROM paper_trades ORDER BY id DESC",
+                ),
+                "events": self._rows(
+                    connection,
+                    """
+                    SELECT
+                        e.*, t.symbol, t.base, t.side
+                    FROM paper_events AS e
+                    JOIN paper_trades AS t ON t.id = e.trade_id
+                    ORDER BY e.id DESC
+                    LIMIT 500
+                    """,
+                ),
+            }
 
     def open_positions(self):
         return self._query(
