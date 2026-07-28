@@ -32,6 +32,28 @@ entry; Fibo extension luôn độc lập với entry và chỉ dùng cho TP.
 pip install -r requirements.txt
 ```
 
+## Đăng nhập single-user
+
+REST API, WebSocket và trang tài liệu đều yêu cầu một phiên đăng nhập bằng
+cookie `HttpOnly`. Tạo `.env` từ `.env.example`, sau đó đặt:
+
+```dotenv
+SONIC_ADMIN_USERNAME=admin
+SONIC_ADMIN_PASSWORD=mot-mat-khau-rat-manh
+SONIC_SESSION_SECRET=mot-chuoi-ngau-nhien-toi-thieu-32-ky-tu
+SONIC_COOKIE_SECURE=false
+```
+
+Không commit `.env`. Khi chạy sau HTTPS công khai, đổi
+`SONIC_COOKIE_SECURE=true`. Nếu mật khẩu ngắn hơn 12 ký tự hoặc khóa phiên ngắn
+hơn 32 ký tự, `/health` trả `503` và API giữ trạng thái đóng.
+
+Tạo khóa ngẫu nhiên bằng Python:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
 ## Night Watch — scanner + paper trading toàn bộ OKX
 
 Monitor quét toàn bộ perpetual USDT crypto active trên OKX sau mỗi lần nến
@@ -68,8 +90,9 @@ SONIC_REALTIME_STALE_SECONDS=10
 ```
 
 Khi phát triển, mở React tại `http://localhost:5173`. Khi chạy Docker Compose,
-mở production frontend tại `http://localhost:8501`. API và tài liệu OpenAPI
-chạy tại `http://localhost:8000/docs`. Muốn thử đúng một lượt rồi thoát:
+mở production frontend tại `http://localhost:8501`. API chỉ bind vào localhost;
+tài liệu OpenAPI có đăng nhập tại `http://localhost:8501/docs`. Muốn thử đúng
+một lượt rồi thoát:
 
 ```bash
 python paper_monitor.py --once

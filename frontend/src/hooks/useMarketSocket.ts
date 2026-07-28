@@ -5,11 +5,17 @@ const initial: MarketState = {
   connected: false, status: {}, tickers: {}, candles: {}, events: [], sequence: 0
 };
 
-export function useMarketSocket(): MarketState {
+export function useMarketSocket(
+  enabled = true, onUnauthorized?: () => void
+): MarketState {
   const [state, setState] = useState<MarketState>(initial);
   const retry = useRef(0);
 
   useEffect(() => {
+    if (!enabled) {
+      setState(initial);
+      return;
+    }
     let socket: WebSocket | null = null;
     let timer = 0;
     let stopped = false;
@@ -56,8 +62,13 @@ export function useMarketSocket(): MarketState {
           return next;
         });
       };
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         setState((current) => ({ ...current, connected: false }));
+        if (event.code === 4401) {
+          stopped = true;
+          onUnauthorized?.();
+          return;
+        }
         if (!stopped) {
           const delay = Math.min(1000 * 2 ** retry.current++, 15000);
           timer = window.setTimeout(connect, delay);
@@ -71,6 +82,6 @@ export function useMarketSocket(): MarketState {
       clearTimeout(timer);
       socket?.close();
     };
-  }, []);
+  }, [enabled, onUnauthorized]);
   return state;
 }

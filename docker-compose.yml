@@ -16,8 +16,16 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     ports:
-      - "8000:8000"
-    environment: *sonic-environment
+      - "127.0.0.1:8000:8000"
+    environment:
+      <<: *sonic-environment
+      SONIC_ADMIN_USERNAME: ${SONIC_ADMIN_USERNAME:-admin}
+      SONIC_ADMIN_PASSWORD: ${SONIC_ADMIN_PASSWORD:-}
+      SONIC_SESSION_SECRET: ${SONIC_SESSION_SECRET:-}
+      SONIC_SESSION_TTL_HOURS: ${SONIC_SESSION_TTL_HOURS:-12}
+      SONIC_COOKIE_SECURE: ${SONIC_COOKIE_SECURE:-false}
+      SONIC_LOGIN_MAX_ATTEMPTS: ${SONIC_LOGIN_MAX_ATTEMPTS:-5}
+      SONIC_LOGIN_WINDOW_SECONDS: ${SONIC_LOGIN_WINDOW_SECONDS:-300}
     volumes:
       - ./results:/app/results
     healthcheck:

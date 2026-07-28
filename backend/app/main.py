@@ -1,9 +1,12 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+from backend.app.api.routes.auth import router as auth_router
 from backend.app.api.routes.dashboard import router
+from backend.app.core.auth import read_session_token
 from backend.app.core.config import settings
 from backend.app.schemas.dashboard import HealthResponse
 from backend.app.api.dependencies import realtime_market_hub
@@ -58,12 +61,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+public_auth_paths = {
+    f"{settings.api_prefix}/auth/login",
+    f"{settings.api_prefix}/auth/logout",
+    f"{settings.api_prefix}/auth/session",
+}
+protected_system_paths = {"/docs", "/redoc", "/openapi.json"}
+
+
+@app.middleware("http")
+async def require_authenticated_session(request: Request, call_next):
+    path = request.url.path
+    protected = (
+        path in protected_system_paths
+        or (
+            path.startswith(f"{settings.api_prefix}/")
+            and path not in public_auth_paths
+        )
+    )
+    if protected:
+        configuration_error = settings.auth_configuration_error
+        if configuration_error:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": configuration_error},
+                headers={"Cache-Control": "no-store"},
+            )
+        session = read_session_token(
+            request.cookies.get(settings.session_cookie_name)
+        )
+        if not session:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Bạn cần đăng nhập để truy cập Sonic R."},
+                headers={"Cache-Control": "no-store"},
+            )
+    response = await call_next(request)
+    if path.startswith(f"{settings.api_prefix}/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 @app.get("/health", tags=["system"], response_model=HealthResponse)
-def health():
+def health(response: Response):
+    if settings.auth_configuration_error:
+        response.status_code = 503
+        return {"status": "misconfigured", "service": "sonic-r-api"}
     hub = realtime_market_hub()
     status = "ok" if hub.status["connected"] else "degraded"
     return {"status": status, "service": "sonic-r-api"}
 
 
+app.include_router(
+    auth_router, prefix=f"{settings.api_prefix}/auth", tags=["authentication"]
+)
 app.include_router(router, prefix=settings.api_prefix, tags=["dashboard"])

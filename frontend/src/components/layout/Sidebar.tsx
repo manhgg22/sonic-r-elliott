@@ -1,14 +1,18 @@
 import {
-  BarChart3, Code2, History, LayoutDashboard, ScanLine, ShieldCheck,
-  SlidersHorizontal, X
+  BarChart3, Code2, History, LayoutDashboard, LogOut, ScanLine,
+  ShieldCheck, X
 } from "lucide-react";
 import type { Page } from "../../shared/constants";
 
-export function Sidebar({ page, setPage, open, onClose }: {
+export function Sidebar({
+  page, setPage, open, onClose, username, onLogout
+}: {
   page: Page;
   setPage: (page: Page) => void;
   open: boolean;
   onClose: () => void;
+  username: string;
+  onLogout: () => void;
 }) {
   const items: Array<[Page, string, string, React.ReactNode]> = [
     ["terminal", "Tổng quan", "Thị trường & tín hiệu", <LayoutDashboard />],
@@ -50,8 +54,10 @@ export function Sidebar({ page, setPage, open, onClose }: {
         </div>
         <div className="sidebar-foot">
           <div className="avatar">SR</div>
-          <span><b>Sonic Operator</b><small>Decision support</small></span>
-          <SlidersHorizontal />
+          <span><b>{username}</b><small>Single-user operator</small></span>
+          <button onClick={onLogout} aria-label="Đăng xuất" title="Đăng xuất">
+            <LogOut />
+          </button>
         </div>
       </aside>
     </>

@@ -1,9 +1,15 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import {
+  lazy, Suspense, useCallback, useEffect, useMemo, useState
+} from "react";
 import { Wifi } from "lucide-react";
 import { Sidebar } from "../components/layout/Sidebar";
 import { Topbar } from "../components/layout/Topbar";
+import { LoginPage } from "../features/auth/LoginPage";
 import { useMarketSocket } from "../hooks/useMarketSocket";
-import { getTerminalSnapshot } from "../services/api";
+import {
+  ApiError, getAuthSession, getTerminalSnapshot, logout,
+  type AuthSession
+} from "../services/api";
 import {
   EMPTY_SNAPSHOT, PAGE_META, type Page
 } from "../shared/constants";
@@ -38,7 +44,9 @@ export default function App() {
   const [data, setData] = useState<TerminalSnapshot>(EMPTY_SNAPSHOT);
   const [selectedKey, setSelectedKey] = useState<string>();
   const [error, setError] = useState("");
-  const market = useMarketSocket();
+  const [session, setSession] = useState<AuthSession | null>();
+  const handleUnauthorized = useCallback(() => setSession(null), []);
+  const market = useMarketSocket(Boolean(session), handleUnauthorized);
 
   const selected = useMemo(() =>
     data.setups.find((setup) =>
@@ -57,18 +65,54 @@ export default function App() {
       setData(snapshot);
       setError("");
     })
-    .catch((loadError: Error) => setError(loadError.message));
+    .catch((loadError: Error) => {
+      if (loadError instanceof ApiError && loadError.status === 401) {
+        setSession(null);
+        return;
+      }
+      setError(loadError.message);
+    });
 
   useEffect(() => {
+    getAuthSession()
+      .then(setSession)
+      .catch(() => setSession(null));
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
     load();
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     location.hash = page;
     document.title = `${PAGE_META[page].title} · Sonic R`;
   }, [page]);
+
+  if (session === undefined) {
+    return (
+      <main className="auth-loading">
+        <span className="login-mark"><i /><i /><i /></span>
+        <b>SONIC R</b>
+        <small>Đang xác minh phiên đăng nhập…</small>
+      </main>
+    );
+  }
+
+  if (session === null) {
+    return <LoginPage onAuthenticated={setSession} />;
+  }
+
+  const signOut = async () => {
+    try {
+      await logout();
+    } finally {
+      setData(EMPTY_SNAPSHOT);
+      setSession(null);
+    }
+  };
 
   return (
     <div className="app">
@@ -77,6 +121,8 @@ export default function App() {
         setPage={setPage}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        username={session.username}
+        onLogout={signOut}
       />
       <main>
         <Topbar page={page} market={market} onMenu={() => setSidebarOpen(true)} />

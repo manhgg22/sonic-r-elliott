@@ -11,6 +11,8 @@ from fastapi.responses import HTMLResponse
 from requests import RequestException
 
 from backend.app.api.dependencies import dashboard_service, realtime_market_hub
+from backend.app.core.auth import read_session_token
+from backend.app.core.config import settings
 from backend.app.schemas.dashboard import (
     CandleResponse,
     LivePositionsResponse,
@@ -63,6 +65,12 @@ async def market_stream(
     hub: RealtimeMarketHub = Depends(realtime_market_hub),
 ):
     await websocket.accept()
+    session = read_session_token(
+        websocket.cookies.get(settings.session_cookie_name)
+    )
+    if not session:
+        await websocket.close(code=4401, reason="Authentication required")
+        return
     queue = hub.subscribe()
     try:
         await websocket.send_text(json.dumps(hub.snapshot()))
@@ -76,7 +84,9 @@ async def market_stream(
                     "status": hub.health(),
                 })
             await websocket.send_text(message)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        # Uvicorn có thể báo RuntimeError nếu peer đóng đúng lúc server gửi
+        # batch tiếp theo. Đây là disconnect bình thường, không phải lỗi 500.
         pass
     finally:
         hub.unsubscribe(queue)
