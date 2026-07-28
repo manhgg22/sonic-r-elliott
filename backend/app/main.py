@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.routes.auth import router as auth_router
 from backend.app.api.routes.dashboard import router
@@ -69,6 +71,26 @@ public_auth_paths = {
 protected_system_paths = {"/docs", "/redoc", "/openapi.json"}
 
 
+def _add_security_headers(response: Response) -> Response:
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+    )
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "font-src 'self' data:; "
+        "img-src 'self' data: https://fastapi.tiangolo.com; "
+        "connect-src 'self' ws: wss:; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    )
+    return response
+
+
 @app.middleware("http")
 async def require_authenticated_session(request: Request, call_next):
     path = request.url.path
@@ -82,24 +104,24 @@ async def require_authenticated_session(request: Request, call_next):
     if protected:
         configuration_error = settings.auth_configuration_error
         if configuration_error:
-            return JSONResponse(
+            return _add_security_headers(JSONResponse(
                 status_code=503,
                 content={"detail": configuration_error},
                 headers={"Cache-Control": "no-store"},
-            )
+            ))
         session = read_session_token(
             request.cookies.get(settings.session_cookie_name)
         )
         if not session:
-            return JSONResponse(
+            return _add_security_headers(JSONResponse(
                 status_code=401,
                 content={"detail": "Bạn cần đăng nhập để truy cập Sonic R."},
                 headers={"Cache-Control": "no-store"},
-            )
+            ))
     response = await call_next(request)
     if path.startswith(f"{settings.api_prefix}/"):
         response.headers["Cache-Control"] = "no-store"
-    return response
+    return _add_security_headers(response)
 
 
 @app.get("/health", tags=["system"], response_model=HealthResponse)
@@ -116,3 +138,13 @@ app.include_router(
     auth_router, prefix=f"{settings.api_prefix}/auth", tags=["authentication"]
 )
 app.include_router(router, prefix=settings.api_prefix, tags=["dashboard"])
+
+# Replit exposes one web port. When the deployment build has produced
+# frontend/dist, FastAPI serves the React application and all API/WebSocket
+# routes remain same-origin. Docker Compose still uses the dedicated Nginx
+# frontend because its routes are registered before this fallback mount.
+frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if frontend_dist.is_dir():
+    app.mount(
+        "/", StaticFiles(directory=frontend_dist, html=True), name="frontend"
+    )

@@ -1,0 +1,14 @@
+entrypoint = "tools/replit_start.py"
+build = "pip install -r requirements.txt && npm ci --prefix frontend && npm run build --prefix frontend"
+run = ["python", "tools/replit_start.py"]
+
+[gitHubImport]
+requiredFiles = [".replit", "requirements.txt", "frontend/package.json"]
+
+[deployment]
+build = "pip install -r requirements.txt && npm ci --prefix frontend && npm run build --prefix frontend"
+run = ["python", "tools/replit_start.py"]
+
+[[ports]]
+localPort = 8000
+externalPort = 80

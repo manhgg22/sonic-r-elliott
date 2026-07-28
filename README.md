@@ -119,6 +119,23 @@ docker compose logs -f backend
 docker compose logs -f paper-monitor
 ```
 
+### Public trên Replit
+
+Repo có `.replit` và `tools/replit_start.py` để Replit build React rồi phục vụ
+FE, REST và WebSocket trên cùng cổng `8000`. Supervisor chạy thêm paper monitor
+trong cùng Reserved VM.
+
+1. Import repo GitHub `https://github.com/manhgg22/sonic-r-elliott`.
+2. Trong Secrets, thêm `SONIC_ADMIN_USERNAME`, `SONIC_ADMIN_PASSWORD`,
+   `SONIC_SESSION_SECRET`, `SONIC_COOKIE_SECURE=true` và
+   `SONIC_RUN_MONITOR=true`.
+3. Bấm **Run** và kiểm tra Preview.
+4. Trong Publishing, chọn **Reserved VM**, không chọn Autoscale, rồi Publish.
+
+SQLite trong `results/` chỉ phù hợp public test vì filesystem deployment có
+thể reset khi republish. Muốn giữ lịch sử paper lâu dài cần chuyển repository
+sang Replit SQL Database/PostgreSQL trước.
+
 Cache thị trường được giữ tại `data/cache/`, SQLite và log tại `results/`.
 Không mở cổng 8501 ra Internet công khai nếu chưa đặt ứng dụng sau lớp
 xác thực/reverse proxy.
