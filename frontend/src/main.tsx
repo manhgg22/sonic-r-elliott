@@ -5,10 +5,10 @@ import "@fontsource/be-vietnam-pro/400.css";
 import "@fontsource/be-vietnam-pro/500.css";
 import "@fontsource/be-vietnam-pro/600.css";
 import "@fontsource/be-vietnam-pro/700.css";
-import App from "./App";
-import "./styles.css";
-import "./antd-overrides.css";
-import "./typography.css";
+import App from "./app/App";
+import "./styles/base.css";
+import "./styles/antd-overrides.css";
+import "./styles/typography.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -16,26 +16,26 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       theme={{
         algorithm: theme.darkAlgorithm,
         token: {
-          colorPrimary: "#19d9ec",
-          colorInfo: "#19d9ec",
-          colorSuccess: "#35e48c",
-          colorWarning: "#ffbe3f",
-          colorError: "#ff6b76",
-          colorBgBase: "#071014",
-          colorBgContainer: "#0b161a",
-          colorBgElevated: "#101c20",
-          colorBorder: "#223238",
-          colorText: "#d9e5e7",
-          colorTextSecondary: "#71868e",
-          borderRadius: 2,
+          colorPrimary: "#49d8ed",
+          colorInfo: "#49d8ed",
+          colorSuccess: "#43d99b",
+          colorWarning: "#f5b942",
+          colorError: "#ff7185",
+          colorBgBase: "#090c16",
+          colorBgContainer: "#111625",
+          colorBgElevated: "#151b2d",
+          colorBorder: "#273049",
+          colorText: "#f2f5fb",
+          colorTextSecondary: "#7f8aa3",
+          borderRadius: 8,
           fontFamily: "\"Be Vietnam Pro\", Arial, sans-serif",
-          controlHeight: 30
+          controlHeight: 34
         },
         components: {
-          Button: { primaryShadow: "none", borderRadius: 2 },
-          Input: { activeShadow: "0 0 0 1px rgba(25,217,236,.2)" },
-          Select: { optionSelectedBg: "#102e35" },
-          Table: { headerBg: "#0f1c20", rowHoverBg: "#102328" }
+          Button: { primaryShadow: "none", borderRadius: 8 },
+          Input: { activeShadow: "0 0 0 2px rgba(73,216,237,.13)" },
+          Select: { optionSelectedBg: "#1a3040" },
+          Table: { headerBg: "#151b2d", rowHoverBg: "#182036" }
         }
       }}
     >

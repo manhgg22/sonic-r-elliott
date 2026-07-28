@@ -1,4 +1,4 @@
-import type { CandleRow, TerminalSnapshot } from "./types";
+import type { CandleRow, TerminalSnapshot } from "../shared/types";
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(path, { headers: { Accept: "application/json" } });

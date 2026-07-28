@@ -18,12 +18,27 @@ from data.loader import okx_usdt_swap_universe
 DB_PATH = Path("results/paper_trading.db")
 # Một lượt quét treo/crash sẽ tự nhả khoá sau ngần này để chu kỳ sau chạy tiếp.
 SCAN_LOCK_STALE_SECONDS = float(os.getenv("SONIC_SCAN_LOCK_STALE_SECONDS", "600"))
+MAX_NEW_TRADES_PER_WEEK = int(os.getenv("SONIC_MAX_TRADES_PER_WEEK", "5"))
+PENDING_EXPIRY_BARS = int(os.getenv("SONIC_PENDING_EXPIRY_BARS", "4"))
+RISK_PCT_PER_TRADE = float(os.getenv("SONIC_RISK_PCT_PER_TRADE", "0.5"))
+MAX_PORTFOLIO_RISK_PCT = float(
+    os.getenv("SONIC_MAX_PORTFOLIO_RISK_PCT", "2.0")
+)
+if PENDING_EXPIRY_BARS < 1:
+    raise ValueError("SONIC_PENDING_EXPIRY_BARS phải >= 1")
+if not 0 < RISK_PCT_PER_TRADE <= MAX_PORTFOLIO_RISK_PCT:
+    raise ValueError(
+        "SONIC_RISK_PCT_PER_TRADE phải > 0 và không vượt "
+        "SONIC_MAX_PORTFOLIO_RISK_PCT"
+    )
 SCAN_COLUMNS = [
     "rank", "name", "symbol", "base", "side", "status", "actionable",
     "signal_time", "bar_open", "bar_high", "bar_low", "bar_close",
     "entry", "sl", "tp1", "tp2", "tp1_rr", "tp2_rr", "trail_h1",
-    "pa", "missing", "f_trend", "f_breakout", "f_dow", "f_value_zone",
-    "f_pa", "contract_size", "amount_step", "min_contracts",
+    "pa", "missing", "f_trend", "f_regime", "f_session", "f_breakout",
+    "f_dow", "f_value_zone", "f_pa", "session", "adx", "separation",
+    "ema200_aligned", "pva_state", "pva_ratio", "pva_rising", "pva_climax",
+    "entry_model", "contract_size", "amount_step", "min_contracts",
 ]
 
 
@@ -52,8 +67,12 @@ def connect(db_path=DB_PATH):
             bar_open REAL, bar_high REAL, bar_low REAL, bar_close REAL,
             entry REAL, sl REAL, tp1 REAL, tp2 REAL, tp1_rr REAL, tp2_rr REAL,
             trail_h1 REAL, pa TEXT, missing TEXT, f_trend INTEGER,
-            f_breakout INTEGER, f_dow INTEGER, f_value_zone INTEGER,
-            f_pa INTEGER, contract_size REAL, amount_step REAL,
+            f_regime INTEGER, f_session INTEGER, f_breakout INTEGER,
+            f_dow INTEGER, f_value_zone INTEGER, f_pa INTEGER,
+            session TEXT, adx REAL, separation REAL, ema200_aligned INTEGER,
+            pva_state TEXT, pva_ratio REAL, pva_rising INTEGER,
+            pva_climax INTEGER, entry_model TEXT,
+            contract_size REAL, amount_step REAL,
             min_contracts REAL, PRIMARY KEY (symbol, side)
         );
         CREATE TABLE IF NOT EXISTS paper_trades (
@@ -68,7 +87,9 @@ def connect(db_path=DB_PATH):
             realized_r REAL NOT NULL DEFAULT 0, tp1_hit INTEGER NOT NULL DEFAULT 0,
             tp2_hit INTEGER NOT NULL DEFAULT 0, last_bar_time TEXT NOT NULL,
             mfe_r REAL NOT NULL DEFAULT 0, mae_r REAL NOT NULL DEFAULT 0,
-            closed_at TEXT, exit_price REAL, exit_reason TEXT, total_r REAL
+            risk_pct REAL NOT NULL DEFAULT 0.5, expires_at TEXT,
+            filled_at TEXT, closed_at TEXT, exit_price REAL,
+            exit_reason TEXT, total_r REAL
         );
         CREATE TABLE IF NOT EXISTS paper_events (
             id INTEGER PRIMARY KEY, trade_id INTEGER NOT NULL,
@@ -84,6 +105,60 @@ def connect(db_path=DB_PATH):
         VALUES (1, NULL, NULL);
         """
     )
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(latest_setups)").fetchall()
+    }
+    migrations = {
+        "f_regime": "INTEGER",
+        "f_session": "INTEGER",
+        "session": "TEXT",
+        "adx": "REAL",
+        "separation": "REAL",
+        "ema200_aligned": "INTEGER",
+        "pva_state": "TEXT",
+        "pva_ratio": "REAL",
+        "pva_rising": "INTEGER",
+        "pva_climax": "INTEGER",
+        "entry_model": "TEXT",
+    }
+    for column, sql_type in migrations.items():
+        if column not in existing:
+            conn.execute(
+                f"ALTER TABLE latest_setups ADD COLUMN {column} {sql_type}"
+            )
+    trade_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(paper_trades)").fetchall()
+    }
+    trade_migrations = {
+        "risk_pct": f"REAL NOT NULL DEFAULT {RISK_PCT_PER_TRADE}",
+        "expires_at": "TEXT",
+        "filled_at": "TEXT",
+    }
+    for column, sql_type in trade_migrations.items():
+        if column not in trade_columns:
+            conn.execute(
+                f"ALTER TABLE paper_trades ADD COLUMN {column} {sql_type}"
+            )
+    # Dữ liệu legacy dùng event OPEN làm thời điểm khớp. Backfill một lần,
+    # không thay đổi opened_at vì trường đó nay được hiểu là lúc setup ARMED.
+    conn.execute(
+        """
+        UPDATE paper_trades
+        SET filled_at = (
+            SELECT MIN(event_at)
+            FROM paper_events
+            WHERE paper_events.trade_id = paper_trades.id
+              AND paper_events.event IN ('FILL', 'OPEN')
+        )
+        WHERE filled_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM paper_events
+            WHERE paper_events.trade_id = paper_trades.id
+              AND paper_events.event IN ('FILL', 'OPEN')
+          )
+        """
+    )
+    conn.commit()
     return conn
 
 
@@ -118,6 +193,30 @@ def _value(value):
     if isinstance(value, bool):
         return int(value)
     return value.item() if hasattr(value, "item") else value
+
+
+def committed_risk_pct(trade) -> float:
+    """Risk tối đa còn lại tại current SL, tính theo % equity ban đầu."""
+    state = dict(trade)
+    risk_pct = float(state.get("risk_pct") or RISK_PCT_PER_TRADE)
+    if state.get("status") == "PENDING":
+        return risk_pct
+    if state.get("status") != "OPEN":
+        return 0.0
+    risk = float(state.get("risk") or 0)
+    if risk <= 0:
+        return 0.0
+    direction = 1 if state["side"] == "LONG" else -1
+    stop_r = (
+        (float(state["current_sl"]) - float(state["entry"]))
+        * direction
+        / risk
+    )
+    result_at_stop_r = (
+        float(state.get("realized_r") or 0)
+        + float(state.get("remaining") or 0) * stop_r
+    )
+    return max(0.0, -result_at_stop_r) * risk_pct
 
 
 def save_scan(conn, report, scanned_at, duration):
@@ -245,7 +344,7 @@ def manage_open_trades(conn, report):
     }
     with conn:
         for stored in conn.execute(
-            "SELECT * FROM paper_trades WHERE status='OPEN'"
+            "SELECT * FROM paper_trades WHERE status IN ('PENDING', 'OPEN')"
         ).fetchall():
             bar = bars.get((stored["symbol"], stored["side"]))
             if not bar:
@@ -253,7 +352,56 @@ def manage_open_trades(conn, report):
             bar_time = pd.Timestamp(bar["signal_time"])
             if bar_time <= pd.Timestamp(stored["last_bar_time"]):
                 continue
-            state, events = advance_paper_trade(dict(stored), bar)
+            state = dict(stored)
+            events = []
+            if state["status"] == "PENDING":
+                expires_at = state.get("expires_at")
+                if expires_at is None:
+                    expires_at = (
+                        pd.Timestamp(state["opened_at"])
+                        + pd.Timedelta(minutes=15 * PENDING_EXPIRY_BARS)
+                    ).isoformat()
+                if bar_time > pd.Timestamp(expires_at):
+                    conn.execute(
+                        """
+                        UPDATE paper_trades SET
+                            status='EXPIRED', remaining=0, last_bar_time=?,
+                            closed_at=?, exit_reason='EXPIRY', total_r=0
+                        WHERE id=?
+                        """,
+                        (
+                            _value(bar["signal_time"]),
+                            _value(bar["signal_time"]),
+                            state["id"],
+                        ),
+                    )
+                    _record_event(
+                        conn,
+                        state["id"],
+                        _value(bar["signal_time"]),
+                        "EXPIRED",
+                        float(state["entry"]),
+                        0,
+                        f"Không khớp sau {PENDING_EXPIRY_BARS} nến M15",
+                    )
+                    continue
+                triggered = (
+                    float(bar["bar_high"]) >= float(state["entry"])
+                    if state["side"] == "LONG"
+                    else float(bar["bar_low"]) <= float(state["entry"])
+                )
+                if not triggered:
+                    conn.execute(
+                        "UPDATE paper_trades SET last_bar_time=?, trail_h1=? WHERE id=?",
+                        (_value(bar["signal_time"]), _value(bar.get("trail_h1")), state["id"]),
+                    )
+                    continue
+                state["status"] = "OPEN"
+                state["filled_at"] = _value(bar["signal_time"])
+                events.append(("FILL", float(state["entry"]), 0.0))
+
+            state, lifecycle_events = advance_paper_trade(state, bar)
+            events.extend(lifecycle_events)
             state["closed_at"] = (
                 _value(bar["signal_time"]) if state["status"] == "CLOSED" else None
             )
@@ -262,7 +410,7 @@ def manage_open_trades(conn, report):
                 UPDATE paper_trades SET
                     status=?, current_sl=?, remaining=?, realized_r=?,
                     tp1_hit=?, tp2_hit=?, last_bar_time=?, trail_h1=?,
-                    mfe_r=?, mae_r=?, closed_at=?, exit_price=?,
+                    mfe_r=?, mae_r=?, filled_at=?, closed_at=?, exit_price=?,
                     exit_reason=?, total_r=?
                 WHERE id=?
                 """,
@@ -271,7 +419,7 @@ def manage_open_trades(conn, report):
                     for key in [
                         "status", "current_sl", "remaining", "realized_r",
                         "tp1_hit", "tp2_hit", "last_bar_time", "trail_h1",
-                        "mfe_r", "mae_r", "closed_at", "exit_price",
+                        "mfe_r", "mae_r", "filled_at", "closed_at", "exit_price",
                         "exit_reason", "total_r", "id",
                     ]
                 ),
@@ -287,24 +435,47 @@ def open_ready_trades(conn, report):
     opened = 0
     ready = report[(report["status"] == "READY") & report["actionable"].astype(bool)]
     with conn:
+        week_cutoff = (
+            pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
+        ).isoformat()
+        opened_this_week = conn.execute(
+            "SELECT COUNT(*) FROM paper_trades WHERE opened_at >= ?",
+            (week_cutoff,),
+        ).fetchone()[0]
+        active_trades = conn.execute(
+            "SELECT * FROM paper_trades "
+            "WHERE status IN ('PENDING', 'OPEN')"
+        ).fetchall()
+        committed_risk = sum(
+            committed_risk_pct(trade) for trade in active_trades
+        )
         for row in ready.to_dict("records"):
+            if opened_this_week >= MAX_NEW_TRADES_PER_WEEK:
+                break
+            if committed_risk + RISK_PCT_PER_TRADE > MAX_PORTFOLIO_RISK_PCT:
+                break
             if conn.execute(
-                "SELECT 1 FROM paper_trades WHERE symbol=? AND status='OPEN'",
+                "SELECT 1 FROM paper_trades "
+                "WHERE symbol=? AND status IN ('PENDING', 'OPEN')",
                 (row["symbol"],),
             ).fetchone():
                 continue
             signal_time = _value(row["signal_time"])
             key = f"{row['symbol']}|{row['side']}|{signal_time}"
             risk = abs(float(row["entry"]) - float(row["sl"]))
+            expires_at = (
+                pd.Timestamp(row["signal_time"])
+                + pd.Timedelta(minutes=15 * PENDING_EXPIRY_BARS)
+            ).isoformat()
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO paper_trades (
                     signal_key, symbol, base, name, side, status, opened_at,
                     entry, initial_sl, current_sl, tp1, tp2, tp1_rr, tp2_rr,
                     trail_h1, risk, remaining, realized_r, tp1_hit, tp2_hit,
-                    last_bar_time, mfe_r, mae_r
-                ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          ?, 1, 0, 0, 0, ?, 0, 0)
+                    last_bar_time, mfe_r, mae_r, risk_pct, expires_at
+                ) VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, 1, 0, 0, 0, ?, 0, 0, ?, ?)
                 """,
                 (
                     key, row["symbol"], row.get("base"), row.get("name"),
@@ -312,12 +483,15 @@ def open_ready_trades(conn, report):
                     float(row["sl"]), float(row["tp1"]), float(row["tp2"]),
                     float(row["tp1_rr"]), float(row["tp2_rr"]),
                     _value(row.get("trail_h1")), risk, signal_time,
+                    RISK_PCT_PER_TRADE, expires_at,
                 ),
             )
             if cursor.rowcount:
                 opened += 1
+                opened_this_week += 1
+                committed_risk += RISK_PCT_PER_TRADE
                 _record_event(
-                    conn, cursor.lastrowid, signal_time, "OPEN", float(row["entry"]), 0,
+                    conn, cursor.lastrowid, signal_time, "ARMED", float(row["entry"]), 0,
                     json.dumps(
                         {"sl": row["sl"], "tp1": row["tp1"], "tp2": row["tp2"]},
                         ensure_ascii=False,

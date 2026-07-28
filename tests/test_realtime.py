@@ -1,4 +1,5 @@
 from backend.app.services.realtime_market import RealtimeMarketHub
+from backend.app.services.okx_market_service import OkxMarketService
 
 
 def test_okx_ticker_message_is_normalized():
@@ -32,3 +33,17 @@ def test_okx_live_candle_keeps_confirm_flag():
     assert message["close"] == 3508.0
     assert message["confirmed"] is False
 
+
+def test_rest_candles_include_complete_dragon_band(monkeypatch):
+    service = OkxMarketService("https://www.okx.com", 1)
+    rows = [
+        ["2000", "102", "106", "101", "105", "12", "0", "0", "1"],
+        ["1000", "100", "104", "99", "103", "10", "0", "0", "1"],
+    ]
+    monkeypatch.setattr(service, "_get", lambda _path, _params: rows)
+    candles = service.candles("BTC-USDT-SWAP", limit=50)
+    assert len(candles) == 2
+    assert {
+        "ema34", "ema34_high", "ema34_low", "ema89"
+    }.issubset(candles[-1])
+    assert candles[-1]["ema34_high"] > candles[-1]["ema34_low"]

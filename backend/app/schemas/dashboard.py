@@ -8,11 +8,21 @@ class HealthResponse(BaseModel):
     service: str
 
 
+class RiskSummary(BaseModel):
+    risk_per_trade_pct: float
+    max_portfolio_risk_pct: float
+    committed_risk_pct: float
+    pending_orders: int
+    open_positions: int
+    pending_expiry_bars: int
+
+
 class SnapshotResponse(BaseModel):
     setups: list[dict[str, Any]]
     runs: list[dict[str, Any]]
     trades: list[dict[str, Any]]
     events: list[dict[str, Any]]
+    risk: RiskSummary
 
 
 class LivePosition(BaseModel):

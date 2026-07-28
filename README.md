@@ -78,11 +78,14 @@ python paper_monitor.py --once
 - LONG: EMA34 > EMA89, breakout, Dow HH/HL, hồi Value Zone, bullish PA.
 - SHORT: EMA34 < EMA89, breakdown, Dow LL/LH, hồi Value Zone, bearish PA.
 
-Paper engine mở tại giá đóng nến xác nhận, TP1 chốt 50%, TP2 chốt 30% và giữ
-20% runner theo EMA34 H1. Dashboard có funnel 5 gate, snapshot scanner, vị thế,
-MFE/MAE, lịch sử sự kiện và equity mô hình. Nếu SL/TP cùng chạm trong một nến,
-engine ưu tiên SL. Đây là OHLCV paper model, chưa tính funding/slippage/fill.
-Ứng dụng không giữ API key và **không gửi lệnh thật**.
+Paper engine đặt pending stop ngoài high/low nến xác nhận với buffer ATR; lệnh
+chỉ chuyển từ `PENDING` sang `OPEN` khi giá chạm trigger và tự hết hạn sau 4 nến
+M15. TP1 chốt 50%, TP2 chốt 30% và giữ 20% runner theo EMA34 H1. Dashboard có
+funnel 7 gate, snapshot scanner, trạng thái pending/open, risk thật từ engine,
+MFE/MAE, lịch sử sự kiện và equity mô hình. Mặc định mỗi lệnh cam kết 0,5% và
+tổng risk danh mục bị chặn ở 2%; cấu hình nằm trong `.env.example`. Nếu SL/TP
+cùng chạm trong một nến, engine ưu tiên SL. Đây là OHLCV paper model, chưa tính
+funding/slippage/fill. Ứng dụng không giữ API key và **không gửi lệnh thật**.
 
 Đóng gói Docker:
 
@@ -322,6 +325,11 @@ dịch hệ thống bằng tiền thật. Dừng tinh chỉnh trên tập dữ l
 ---
 
 ## Sonic R thuần — Binance TOP50, không phí, 2026-07-23
+
+> **Baseline lưu trữ:** bảng kết quả bên dưới được tạo trước khi backtest chuyển
+> sang stop-entry parity. Engine hiện chỉ khớp `entry_trigger` từ nến kế tiếp và
+> tự hủy sau 4 nến, giống paper engine. Cần chạy lại nghiên cứu trước khi dùng
+> các số liệu cũ để ra quyết định.
 
 Giả thuyết kiểm tra: bảy filter cũ làm entry quá muộn. Bản thuần chỉ dùng đúng
 bốn điều kiện: trend EMA34/89, breakout 20 nến còn hiệu lực 30 nến, Value Zone

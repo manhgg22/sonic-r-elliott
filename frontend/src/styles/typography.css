@@ -1,0 +1,11 @@
+:root {
+  font-family: "Be Vietnam Pro", Arial, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*, *::before, *::after { font-family: "Be Vietnam Pro", Arial, sans-serif; }
+.event-console, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.kpi strong, .level b, .watch-row > b, td, .risk-total strong, .market-summary p b, .countdown b { font-variant-numeric: tabular-nums; }

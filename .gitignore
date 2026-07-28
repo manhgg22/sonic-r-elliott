@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.env
 data/cache/
 results/
 frontend/node_modules/

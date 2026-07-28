@@ -48,6 +48,8 @@ class OkxMarketService:
         frame["confirmed"] = frame["confirmed"].eq("1")
         frame = frame.sort_values("timestamp").reset_index(drop=True)
         frame["ema34"] = frame["close"].ewm(span=34, adjust=False).mean()
+        frame["ema34_high"] = frame["high"].ewm(span=34, adjust=False).mean()
+        frame["ema34_low"] = frame["low"].ewm(span=34, adjust=False).mean()
         frame["ema89"] = frame["close"].ewm(span=89, adjust=False).mean()
         frame["timestamp"] = frame["timestamp"].map(lambda value: value.isoformat())
         return frame.to_dict("records")

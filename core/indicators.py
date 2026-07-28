@@ -75,6 +75,54 @@ def slope(series: pd.Series, lookback: int = 10) -> pd.Series:
     return (series - series.shift(lookback)) / (lookback * series.abs())
 
 
+# ---------------------------------------------------------------- PVSRA
+
+def pva_signals(df: pd.DataFrame, lookback: int = 10) -> pd.DataFrame:
+    """
+    Phân loại volume theo định nghĩa PVA của TAH/qFish.
+
+    - Rising: volume >= 150% trung bình ``lookback`` nến trước.
+    - Climax: volume >= 200% trung bình trước, hoặc spread*volume đạt
+      mức cao nhất so với ``lookback`` nến trước.
+
+    Đây là dữ liệu bối cảnh PVSRA, không phải điều kiện entry độc lập.
+    Trung bình và cực trị đều shift(1) để không tự so nến hiện tại với chính nó.
+    """
+    required = {"open", "high", "low", "close", "volume"}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(f"PVA thiếu cột OHLCV: {sorted(missing)}")
+    if lookback < 2:
+        raise ValueError("PVA lookback phải >= 2")
+
+    volume = pd.to_numeric(df["volume"], errors="coerce")
+    spread = (df["high"] - df["low"]).abs()
+    activity = spread * volume
+    average_volume = volume.rolling(lookback, min_periods=lookback).mean().shift(1)
+    previous_peak = activity.rolling(lookback, min_periods=lookback).max().shift(1)
+    volume_ratio = volume / average_volume.replace(0, np.nan)
+
+    out = pd.DataFrame(index=df.index)
+    out["volume_ratio"] = volume_ratio
+    out["rising"] = (volume_ratio >= 1.5).fillna(False)
+    out["climax"] = (
+        (volume_ratio >= 2.0) | (activity >= previous_peak)
+    ).fillna(False)
+    out["direction"] = np.where(
+        df["close"] > df["open"],
+        "bull",
+        np.where(df["close"] < df["open"], "bear", "neutral"),
+    )
+    out["state"] = "normal"
+    out.loc[out["rising"], "state"] = (
+        out.loc[out["rising"], "direction"] + "_rising"
+    )
+    out.loc[out["climax"], "state"] = (
+        out.loc[out["climax"], "direction"] + "_climax"
+    )
+    return out
+
+
 # ---------------------------------------------------------------- ZigZag / Swing
 
 def zigzag_confirmed(

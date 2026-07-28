@@ -29,8 +29,19 @@ from core.trade_setup import (
     build_trade_setup_signals,
     closed_bars,
     latest_trade_setup,
+    sonic_session,
 )
-from paper_monitor import advance_paper_trade, seconds_to_next_close
+from paper_monitor import (
+    MAX_NEW_TRADES_PER_WEEK,
+    MAX_PORTFOLIO_RISK_PCT,
+    PENDING_EXPIRY_BARS,
+    RISK_PCT_PER_TRADE,
+    advance_paper_trade,
+    connect,
+    manage_open_trades,
+    open_ready_trades,
+    seconds_to_next_close,
+)
 from backtest.diagnostics import ablation_variants, funnel
 from backtest.engine import Costs, run_backtest
 from backtest.metrics import basic_metrics, frequency_check, wilson_edge_interval
@@ -217,12 +228,17 @@ def test_pure_sonic_no_lookahead():
     print(f"  [OK] Pure Sonic main→entry: 0/{report['checked']} vi phạm")
 
 
-def test_pure_sonic_only_four_conditions():
+def test_pure_sonic_keeps_four_entry_conditions_plus_regime_context():
     entry = make_synthetic(90 * 96)
     main = resample_ohlcv(entry, "1h")
     sig = build_pure_signals(entry, main, PureSonicConfig())
     filters = [column for column in sig if column.startswith("f_")]
-    assert filters == ["f_trend", "f_breakout", "f_value_zone", "f_pa"]
+    assert filters == [
+        "f_trend", "f_regime", "f_breakout", "f_value_zone", "f_pa"
+    ]
+    assert not (sig["entry_signal"] & ~sig[
+        ["f_trend", "f_breakout", "f_value_zone", "f_pa"]
+    ].all(axis=1)).any()
     assert not {"f_dow", "f_fib", "f_adx", "f_sep"} & set(sig)
     loose = build_pure_signals(
         entry,
@@ -233,7 +249,7 @@ def test_pure_sonic_only_four_conditions():
     print("  [OK] Pure Sonic chỉ có đúng 4 điều kiện")
 
 
-def test_deploy_setup_has_five_gates_and_closed_bars():
+def test_deploy_setup_has_seven_gates_and_closed_bars():
     tiny = make_synthetic(4)
     now = tiny.index[-1] + pd.offsets.Minute(10)
     assert len(closed_bars(tiny, "15m", now)) == 3
@@ -242,10 +258,13 @@ def test_deploy_setup_has_five_gates_and_closed_bars():
     main = resample_ohlcv(entry, "1h")
     sig = build_trade_setup_signals(entry, main)
     filters = [column for column in sig if column.startswith("f_")]
-    assert filters == [
-        "f_trend", "f_breakout", "f_dow", "f_value_zone", "f_pa"
-    ]
+    assert set(filters) == {
+        "f_trend", "f_regime", "f_session", "f_breakout",
+        "f_dow", "f_value_zone", "f_pa",
+    }
     assert (sig["entry_signal"] <= sig["f_dow"]).all()
+    assert (sig["entry_signal"] <= sig["f_regime"]).all()
+    assert (sig["entry_signal"] <= sig["f_session"]).all()
     signal_time = sig.index[sig["entry_signal"]][-1]
     setup = latest_trade_setup(
         "TEST/USDT",
@@ -255,6 +274,8 @@ def test_deploy_setup_has_five_gates_and_closed_bars():
     )
     assert setup["status"] == "READY"
     assert setup["sl"] < setup["entry"] < setup["tp1"] < setup["tp2"]
+    assert setup["bar_close"] == entry.loc[signal_time, "close"]
+    assert setup["entry"] > setup["bar_high"]
 
     down = entry.copy()
     ceiling = 300000.0
@@ -282,7 +303,9 @@ def test_deploy_setup_has_five_gates_and_closed_bars():
     )
     assert short["status"] == "READY"
     assert short["tp2"] < short["tp1"] < short["entry"] < short["sl"]
-    print("  [OK] Setup LONG/SHORT có đúng 5 gate và chỉ dùng nến đã đóng")
+    assert short["bar_close"] == down.loc[short_time, "close"]
+    assert short["entry"] < short["bar_low"]
+    print("  [OK] Setup LONG/SHORT có đúng 7 gate và chỉ dùng nến đã đóng")
 
 
 def test_paper_trade_lifecycle_is_conservative():
@@ -358,6 +381,196 @@ def test_adx_range():
     print(f"  [OK] ADX hợp lệ (trung bình {a.mean():.1f})")
 
 
+def test_pva_uses_previous_ten_bars_without_lookahead():
+    index = pd.date_range("2026-01-05", periods=12, freq="15min", tz="UTC")
+    frame = pd.DataFrame({
+        "open": [100.0] * 12,
+        "high": [101.0] * 12,
+        "low": [99.0] * 12,
+        "close": [100.5] * 12,
+        "volume": [10.0] * 11 + [20.0],
+    }, index=index)
+    pva = ind.pva_signals(frame)
+    assert np.isnan(pva["volume_ratio"].iloc[9])
+    assert np.isclose(pva["volume_ratio"].iloc[-1], 2.0)
+    assert pva["rising"].iloc[-1] and pva["climax"].iloc[-1]
+    assert pva["state"].iloc[-1] == "bull_climax"
+
+
+def test_sonic_sessions_use_new_york_time_and_exclude_weekend():
+    index = pd.DatetimeIndex([
+        "2026-01-05T07:00:00Z",  # 02:00 New York
+        "2026-01-05T13:00:00Z",  # 08:00 New York
+        "2026-01-05T10:00:00Z",  # 05:00 New York
+        "2026-01-10T13:00:00Z",  # Saturday
+    ])
+    sessions = sonic_session(index)
+    assert sessions["session"].tolist() == [
+        "EUROPE", "US", "OFF_SESSION", "OFF_SESSION"
+    ]
+    assert sessions["f_session"].tolist() == [True, True, False, False]
+
+
+def test_ready_setup_is_armed_then_filled_on_next_bar():
+    with TemporaryDirectory() as directory:
+        connection = connect(Path(directory) / "paper.db")
+        signal_time = pd.Timestamp("2026-01-05T13:00:00Z")
+        report = pd.DataFrame([{
+            "symbol": "BTC/USDT:USDT",
+            "base": "BTC",
+            "name": "Bitcoin",
+            "side": "LONG",
+            "status": "READY",
+            "actionable": True,
+            "signal_time": signal_time,
+            "entry": 110.0,
+            "sl": 100.0,
+            "tp1": 125.0,
+            "tp2": 140.0,
+            "tp1_rr": 1.5,
+            "tp2_rr": 3.0,
+            "trail_h1": 101.0,
+        }])
+        assert open_ready_trades(connection, report) == 1
+        pending = connection.execute(
+            "SELECT * FROM paper_trades"
+        ).fetchone()
+        assert pending["status"] == "PENDING"
+        assert pending["risk_pct"] == RISK_PCT_PER_TRADE
+        assert pd.Timestamp(pending["expires_at"]) == (
+            signal_time + pd.Timedelta(minutes=15 * PENDING_EXPIRY_BARS)
+        )
+
+        next_bar = pd.DataFrame([{
+            **report.iloc[0].to_dict(),
+            "status": "NO_SETUP",
+            "signal_time": signal_time + pd.Timedelta(minutes=15),
+            "bar_high": 111.0,
+            "bar_low": 109.0,
+            "bar_close": 110.5,
+        }])
+        manage_open_trades(connection, next_bar)
+        filled = connection.execute(
+            "SELECT * FROM paper_trades"
+        ).fetchone()
+        events = [
+            row[0] for row in connection.execute(
+                "SELECT event FROM paper_events ORDER BY id"
+            ).fetchall()
+        ]
+        assert filled["status"] == "OPEN"
+        assert pd.Timestamp(filled["filled_at"]) == (
+            signal_time + pd.Timedelta(minutes=15)
+        )
+        assert events == ["ARMED", "FILL"]
+        connection.close()
+
+
+def test_pending_setup_expires_instead_of_triggering_stale():
+    with TemporaryDirectory() as directory:
+        connection = connect(Path(directory) / "paper.db")
+        signal_time = pd.Timestamp("2026-01-05T13:00:00Z")
+        report = pd.DataFrame([{
+            "symbol": "ETH/USDT:USDT",
+            "base": "ETH",
+            "name": "Ethereum",
+            "side": "LONG",
+            "status": "READY",
+            "actionable": True,
+            "signal_time": signal_time,
+            "entry": 110.0,
+            "sl": 100.0,
+            "tp1": 125.0,
+            "tp2": 140.0,
+            "tp1_rr": 1.5,
+            "tp2_rr": 3.0,
+            "trail_h1": 101.0,
+        }])
+        assert open_ready_trades(connection, report) == 1
+        stale_bar = pd.DataFrame([{
+            **report.iloc[0].to_dict(),
+            "status": "NO_SETUP",
+            "signal_time": signal_time + pd.Timedelta(
+                minutes=15 * (PENDING_EXPIRY_BARS + 1)
+            ),
+            "bar_high": 120.0,
+            "bar_low": 109.0,
+            "bar_close": 115.0,
+        }])
+        manage_open_trades(connection, stale_bar)
+        trade = connection.execute("SELECT * FROM paper_trades").fetchone()
+        events = [
+            row[0] for row in connection.execute(
+                "SELECT event FROM paper_events ORDER BY id"
+            ).fetchall()
+        ]
+        assert trade["status"] == "EXPIRED"
+        assert trade["total_r"] == 0
+        assert events == ["ARMED", "EXPIRED"]
+        connection.close()
+
+
+def test_portfolio_risk_guardrail_limits_new_pending_orders():
+    with TemporaryDirectory() as directory:
+        connection = connect(Path(directory) / "paper.db")
+        signal_time = pd.Timestamp("2026-01-05T13:00:00Z")
+        rows = []
+        for index in range(10):
+            rows.append({
+                "symbol": f"COIN{index}/USDT:USDT",
+                "base": f"COIN{index}",
+                "name": f"Coin {index}",
+                "side": "LONG",
+                "status": "READY",
+                "actionable": True,
+                "signal_time": signal_time,
+                "entry": 110.0,
+                "sl": 100.0,
+                "tp1": 125.0,
+                "tp2": 140.0,
+                "tp1_rr": 1.5,
+                "tp2_rr": 3.0,
+                "trail_h1": 101.0,
+            })
+        opened = open_ready_trades(connection, pd.DataFrame(rows))
+        expected = min(
+            MAX_NEW_TRADES_PER_WEEK,
+            int(MAX_PORTFOLIO_RISK_PCT // RISK_PCT_PER_TRADE),
+        )
+        assert opened == expected
+        committed = connection.execute(
+            "SELECT SUM(risk_pct) FROM paper_trades "
+            "WHERE status IN ('PENDING', 'OPEN')"
+        ).fetchone()[0]
+        assert committed <= MAX_PORTFOLIO_RISK_PCT
+        connection.close()
+
+
+def test_backtest_stop_entry_waits_for_next_bar_trigger():
+    index = pd.date_range("2026-01-05", periods=4, freq="15min", tz="UTC")
+    market = pd.DataFrame({
+        "open": [100.0, 102.0, 104.0, 110.0],
+        "high": [104.0, 104.0, 106.0, 126.0],
+        "low": [99.0, 100.0, 100.0, 104.0],
+        "close": [102.0, 103.0, 105.0, 124.0],
+        "volume": [10.0] * 4,
+    }, index=index)
+    signal = pd.DataFrame({
+        "entry_signal": [True, False, False, False],
+        "entry_trigger": [105.0, np.nan, np.nan, np.nan],
+        "sl": [95.0] * 4,
+        "pa_engulfing": [True, False, False, False],
+        "pa_pinbar": [False] * 4,
+        "pa_bos": [False] * 4,
+    }, index=index)
+    trades = run_backtest(signal, market, costs=Costs(0, 0))
+    assert len(trades) == 1
+    trade = trades.iloc[0]
+    assert trade["entry_time"] == index[2]
+    assert trade["entry_price"] == 105.0
+    assert trade["exit_reason"] == "TP_2R"
+
+
 def test_fib_math():
     r = ind.fib_retracement(100, 200)
     assert np.isclose(r["0.618"], 138.2), "Fibo retracement sai"
@@ -413,9 +626,6 @@ def test_full_pipeline():
                 "f_dow", "f_fib", "f_value_zone", "f_pa"]:
         pct = 100 * sig[col].mean()
         print(f"    {col:16s} {pct:5.1f}%")
-
-    return sig
-
 
 def test_cross_mode_state_vs_event():
     h1 = resample_ohlcv(make_synthetic(90 * 96), "1h")
@@ -489,7 +699,7 @@ def test_m15_preset_regression():
     columns = ["entry_signal", "sl", "tp_2r", "tp_fib_1618", "tp_fib_2618"]
     fingerprint = int(pd.util.hash_pandas_object(sig[columns], index=True).sum())
     assert int(sig["entry_signal"].sum()) == 30
-    assert fingerprint == 17872205066520887617
+    assert fingerprint == 18314805322991335575
 
     main_bands = ind.sonic_r_bands(main)
     trail = align_htf_to_ltf(
@@ -787,7 +997,7 @@ if __name__ == "__main__":
     test_paper_trade_lifecycle_is_conservative()
 
     print("\n[3] Pipeline đầy đủ")
-    sig = test_full_pipeline()
+    test_full_pipeline()
     test_cross_mode_state_vs_event()
     test_config_entry_defaults_and_sampling_preset()
     test_m15_preset_regression()

@@ -25,11 +25,24 @@ class TradingRepository:
                 "SELECT * FROM paper_trades ORDER BY id DESC"
             ),
             "events": self._query(
-                "SELECT * FROM paper_events ORDER BY id DESC LIMIT 500"
+                """
+                SELECT
+                    e.*, t.symbol, t.base, t.side
+                FROM paper_events AS e
+                JOIN paper_trades AS t ON t.id = e.trade_id
+                ORDER BY e.id DESC
+                LIMIT 500
+                """
             ),
         }
 
     def open_positions(self):
         return self._query(
             "SELECT * FROM paper_trades WHERE status = 'OPEN' ORDER BY opened_at DESC"
+        )
+
+    def active_positions(self):
+        return self._query(
+            "SELECT * FROM paper_trades "
+            "WHERE status IN ('PENDING', 'OPEN') ORDER BY opened_at DESC"
         )

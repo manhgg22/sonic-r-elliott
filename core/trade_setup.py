@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 from . import indicators as ind
 from .mtf import align_htf_to_ltf
@@ -12,6 +13,8 @@ from .signals import Config, dow_and_fib_state
 BAR_DURATION = {"15m": pd.Timedelta("15min"), "1H": pd.Timedelta("1h")}
 FILTER_LABELS = {
     "f_trend": "EMA34 > EMA89",
+    "f_regime": "ADX/độ dốc chống sideways",
+    "f_session": "phiên Âu/Mỹ",
     "f_breakout": "phá vùng tích lũy",
     "f_dow": "Dow HH/HL",
     "f_value_zone": "hồi Value Zone",
@@ -19,11 +22,41 @@ FILTER_LABELS = {
 }
 SHORT_FILTER_LABELS = {
     "f_trend": "EMA34 < EMA89",
+    "f_regime": "ADX/độ dốc chống sideways",
+    "f_session": "phiên Âu/Mỹ",
     "f_breakout": "phá đáy vùng tích lũy",
     "f_dow": "Dow LL/LH",
     "f_value_zone": "hồi Value Zone",
     "f_pa": "bearish engulfing/pinbar",
 }
+
+NEW_YORK = ZoneInfo("America/New_York")
+
+
+def sonic_session(index: pd.DatetimeIndex) -> pd.DataFrame:
+    """
+    Gắn phiên theo giờ EST/EDT của quy tắc Sonic gốc.
+
+    Europe: 01:00-04:00 New York; US: 07:00-11:00 New York.
+    ZoneInfo xử lý DST thay vì hard-code UTC. Cuối tuần luôn off-session.
+    """
+    if index.tz is None:
+        localized = index.tz_localize("UTC")
+    else:
+        localized = index
+    local = localized.tz_convert(NEW_YORK)
+    hour = local.hour
+    weekday = local.weekday < 5
+    europe = weekday & (hour >= 1) & (hour < 4)
+    us = weekday & (hour >= 7) & (hour < 11)
+    out = pd.DataFrame(index=index)
+    out["session"] = np.select(
+        [europe, us],
+        ["EUROPE", "US"],
+        default="OFF_SESSION",
+    )
+    out["f_session"] = europe | us
+    return out
 
 
 def closed_bars(
@@ -55,7 +88,10 @@ def build_trade_setup_signals(
     )[["dow"]]
     dow_aligned = align_htf_to_ltf(dow, entry_df.index)
     sig.insert(6, "f_dow", dow_aligned["dow"].eq("uptrend"))
-    sig["entry_signal"] &= sig["f_dow"]
+    session = sonic_session(entry_df.index)
+    sig.insert(2, "f_session", session["f_session"])
+    sig["session"] = session["session"]
+    sig["entry_signal"] &= sig["f_dow"] & sig["f_regime"] & sig["f_session"]
     sig.attrs["active_filters"] = list(FILTER_LABELS)
     return sig
 
@@ -67,6 +103,13 @@ def build_short_trade_setup_signals(
     """Setup SHORT đối xứng với setup BUY, không thêm indicator."""
     cfg = PureSonicConfig()
     bands = ind.sonic_r_bands(main_df, cfg.ema_fast, cfg.ema_slow)
+    atr_main = ind.atr(main_df, cfg.adx_period)
+    adx_main = ind.adx(main_df, cfg.adx_period)
+    separation = (
+        (bands["ema_fast_close"] - bands["ema_slow"]).abs()
+        / atr_main.replace(0, np.nan)
+    )
+    dragon_slope = ind.slope(bands["ema_fast_close"], cfg.slope_lookback)
     high20 = main_df["high"].rolling(cfg.breakout_lookback).max()
     low20 = main_df["low"].rolling(cfg.breakout_lookback).min()
     breakdown = main_df["close"] < low20.shift(1)
@@ -76,7 +119,22 @@ def build_short_trade_setup_signals(
     )[["dow"]]
 
     main_state = pd.DataFrame(index=main_df.index)
-    main_state["trend"] = bands["ema_fast_close"] < bands["ema_slow"]
+    main_state["trend"] = (
+        (main_df["close"] < bands["ema_fast_low"])
+        & (bands["ema_fast_high"] < bands["ema_slow"])
+    )
+    main_state["regime"] = (
+        (adx_main >= cfg.adx_min)
+        & (separation >= cfg.separation_min)
+        & (dragon_slope < 0)
+    )
+    main_state["ema200_aligned"] = (
+        (bands["ema_fast_high"] < bands["ema_slow"])
+        & (bands["ema_slow"] < bands["ema_200"])
+    )
+    main_state["adx"] = adx_main
+    main_state["separation"] = separation
+    main_state["dragon_slope"] = dragon_slope
     main_state["breakout"] = (
         breakdown.rolling(cfg.breakout_valid_bars, min_periods=1)
         .max()
@@ -101,12 +159,16 @@ def build_short_trade_setup_signals(
     )
     pinbar = (upper_wick > 2 * body) & (upper_wick > lower_wick) & (body > 0)
     atr_entry = ind.atr(entry_df, 14)
+    pva = ind.pva_signals(entry_df, cfg.pva_lookback)
+    session = sonic_session(entry_df.index)
 
     sig = pd.DataFrame(index=entry_df.index)
     sig["close"] = c
     sig["high"] = h
     sig["low"] = l
     sig["f_trend"] = main_aligned["trend"].eq(True)
+    sig["f_regime"] = main_aligned["regime"].eq(True)
+    sig["f_session"] = session["f_session"]
     sig["f_breakout"] = main_aligned["breakout"].eq(True)
     sig["f_dow"] = main_aligned["dow"].eq("downtrend")
     sig["f_value_zone"] = (
@@ -116,12 +178,22 @@ def build_short_trade_setup_signals(
     sig["entry_signal"] = sig[list(SHORT_FILTER_LABELS)].all(axis=1)
     sig["pa_engulfing"] = engulfing.fillna(False)
     sig["pa_pinbar"] = pinbar.fillna(False)
+    sig["session"] = session["session"]
+    sig["adx"] = main_aligned["adx"]
+    sig["separation"] = main_aligned["separation"]
+    sig["dragon_slope"] = main_aligned["dragon_slope"]
+    sig["ema200_aligned"] = main_aligned["ema200_aligned"].eq(True)
+    sig["pva_state"] = pva["state"]
+    sig["pva_ratio"] = pva["volume_ratio"]
+    sig["pva_rising"] = pva["rising"]
+    sig["pva_climax"] = pva["climax"]
+    sig["entry_trigger"] = sig["low"] - cfg.entry_buffer_atr * atr_entry
 
     entry_high = h.rolling(cfg.sl_lookback).max()
     sl_raw = pd.concat([entry_high, main_aligned["vz_slow"]], axis=1).max(axis=1)
     sig["sl"] = sl_raw + cfg.sl_buffer_atr * atr_entry
-    sig["risk"] = sig["sl"] - sig["close"]
-    sig["tp_2r"] = sig["close"] - cfg.tp_r_multiple * sig["risk"]
+    sig["risk"] = sig["sl"] - sig["entry_trigger"]
+    sig["tp_2r"] = sig["entry_trigger"] - cfg.tp_r_multiple * sig["risk"]
     sig["tp_fib_1618"] = sig["high"] - cfg.tp_fib_1 * main_aligned["ext"]
     sig["tp_fib_2618"] = sig["high"] - cfg.tp_fib_2 * main_aligned["ext"]
     sig.attrs["active_filters"] = list(SHORT_FILTER_LABELS)
@@ -160,7 +232,13 @@ def latest_trade_setup(
     row = sig.iloc[-1]
     flags = {name: bool(row[name]) for name in labels}
 
-    context_ready = flags["f_trend"] and flags["f_breakout"] and flags["f_dow"]
+    context_ready = (
+        flags["f_trend"]
+        and flags["f_regime"]
+        and flags["f_session"]
+        and flags["f_breakout"]
+        and flags["f_dow"]
+    )
     if all(flags.values()):
         status = "READY"
     elif context_ready and flags["f_value_zone"]:
@@ -170,7 +248,7 @@ def latest_trade_setup(
     else:
         status = "NO_SETUP"
 
-    entry_price = float(row["close"])
+    entry_price = float(row["entry_trigger"])
     sl = float(row["sl"])
     risk = entry_price - sl if side == "LONG" else sl - entry_price
     risk_valid = np.isfinite(risk) and risk > 0
@@ -215,7 +293,7 @@ def latest_trade_setup(
         "bar_open": float(entry["open"].iloc[-1]),
         "bar_high": float(entry["high"].iloc[-1]),
         "bar_low": float(entry["low"].iloc[-1]),
-        "bar_close": entry_price,
+        "bar_close": float(entry["close"].iloc[-1]),
         "entry": entry_price if actionable else np.nan,
         "sl": sl if actionable else np.nan,
         "tp1": tp1 if actionable else np.nan,
@@ -224,6 +302,15 @@ def latest_trade_setup(
         "tp2_rr": round(abs(tp2 - entry_price) / risk, 2) if actionable else np.nan,
         "trail_h1": float(trail),
         "pa": pa_type,
+        "session": str(row["session"]),
+        "adx": float(row["adx"]),
+        "separation": float(row["separation"]),
+        "ema200_aligned": bool(row["ema200_aligned"]),
+        "pva_state": str(row["pva_state"]),
+        "pva_ratio": float(row["pva_ratio"]),
+        "pva_rising": bool(row["pva_rising"]),
+        "pva_climax": bool(row["pva_climax"]),
+        "entry_model": "STOP_ABOVE_SIGNAL_BAR" if side == "LONG" else "STOP_BELOW_SIGNAL_BAR",
         "missing": ", ".join(missing) if missing else "-",
         **flags,
     }

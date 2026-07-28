@@ -77,6 +77,7 @@ def run_backtest(
     max_bars: int = 500,
     max_concurrent: int = 1,
     trail_ema: Optional[pd.Series] = None,
+    pending_expiry_bars: int = 4,
 ) -> pd.DataFrame:
     """
     Chạy backtest, trả về DataFrame trade log.
@@ -91,6 +92,7 @@ def run_backtest(
     open_idx = -1
     remaining_size = 0.0
     partials = []
+    pending_idx: Optional[int] = None
 
     high_series = m15["high"]
     highs = high_series.to_numpy()
@@ -98,6 +100,11 @@ def run_backtest(
     closes = m15["close"].to_numpy()
     entries = sig["entry_signal"].to_numpy(dtype=bool)
     stops = sig["sl"].to_numpy()
+    triggers = (
+        sig["entry_trigger"].to_numpy()
+        if "entry_trigger" in sig.columns
+        else np.full(len(sig), np.nan)
+    )
     adx_values = (
         sig["adx"].to_numpy() if "adx" in sig.columns else np.full(len(sig), np.nan)
     )
@@ -117,11 +124,53 @@ def run_backtest(
         sig["tp_fib_2618"].to_numpy() if tp_mode == "fib_extension" else None
     )
 
+    def make_trade(signal_idx: int, entry_idx: int, entry: float):
+        sl = stops[signal_idx]
+        if np.isnan(sl) or sl >= entry:
+            return None
+        risk_per_unit = entry - sl
+        if costs.round_trip > 0 and risk_per_unit < entry * 0.001:
+            return None
+        risk_amount = balance * risk_pct / 100
+        size = risk_amount / risk_per_unit
+        trade = Trade(
+            symbol=symbol,
+            entry_time=sig.index[entry_idx],
+            entry_price=entry,
+            sl=sl,
+            tp_mode=tp_mode,
+            size=size,
+            risk_amount=risk_amount,
+            adx=adx_values[signal_idx],
+            retrace_pct=retrace_values[signal_idx],
+            pa_type=(
+                "engulfing" if pa_engulfing[signal_idx]
+                else "pinbar" if pa_pinbar[signal_idx]
+                else "bos" if pa_bos[signal_idx]
+                else "none"
+            ),
+        )
+        trade._initial_risk = risk_per_unit
+        if tp_mode == "sr_level":
+            resistance = find_resistance(high_series, signal_idx, entry)
+            trade._tp_sr = (
+                resistance if resistance else entry + 2 * risk_per_unit
+            )
+        elif tp_mode == "fib_extension":
+            trade._tp1 = tp1_values[signal_idx]
+            trade._tp2 = tp2_values[signal_idx]
+            if np.isnan(trade._tp1) or trade._tp1 <= entry:
+                trade._tp1 = entry + 1.5 * risk_per_unit
+            if np.isnan(trade._tp2) or trade._tp2 <= trade._tp1:
+                trade._tp2 = entry + 3.0 * risk_per_unit
+        return trade
+
     for i in range(len(sig)):
         ts = sig.index[i]
         bar_high = highs[i]
         bar_low = lows[i]
         bar_close = closes[i]
+        filled_pending_this_bar = False
 
         # ---------------- Quản lý lệnh đang mở ----------------
         if open_trade is not None:
@@ -215,63 +264,92 @@ def run_backtest(
                 partials = []
                 remaining_size = 0.0
 
+        # Stop-entry chỉ có hiệu lực từ nến kế tiếp. Nếu OHLC cùng nến fill
+        # cũng chạm SL, ghi nhận SL trước để giữ giả định bảo thủ.
+        if pending_idx is not None and open_trade is None:
+            if i > pending_idx + pending_expiry_bars:
+                pending_idx = None
+            elif i > pending_idx and bar_high >= triggers[pending_idx]:
+                signal_idx = pending_idx
+                pending_idx = None
+                filled_pending_this_bar = True
+                trade = make_trade(
+                    signal_idx, i, float(triggers[signal_idx])
+                )
+                if trade is not None:
+                    open_trade = trade
+                    open_idx = i
+                    remaining_size = trade.size
+                    init_risk = trade._initial_risk
+                    trade.mfe_r = max(
+                        trade.mfe_r,
+                        (bar_high - trade.entry_price) / init_risk,
+                    )
+                    trade.mae_r = min(
+                        trade.mae_r,
+                        (bar_low - trade.entry_price) / init_risk,
+                    )
+                    if bar_low <= trade.sl:
+                        gross = (trade.sl - trade.entry_price) * trade.size
+                        fee = (
+                            (trade.entry_price + trade.sl)
+                            * trade.size * costs.round_trip / 2
+                        )
+                        net = gross - fee
+                        balance += net
+                        trade.exit_time = ts
+                        trade.exit_price = trade.sl
+                        trade.exit_reason = "SL_SAME_BAR"
+                        trade.pnl = net
+                        trade.r_multiple = (
+                            net / trade.risk_amount
+                            if trade.risk_amount else 0
+                        )
+                        trade.bars_held = 0
+                        trade.partial_exits = []
+                        trades.append(trade)
+                        open_trade = None
+                        remaining_size = 0.0
+                    elif i == len(sig) - 1:
+                        gross = (
+                            bar_close - trade.entry_price
+                        ) * trade.size
+                        fee = (
+                            (trade.entry_price + bar_close)
+                            * trade.size * costs.round_trip / 2
+                        )
+                        net = gross - fee
+                        balance += net
+                        trade.exit_time = ts
+                        trade.exit_price = bar_close
+                        trade.exit_reason = "END_OF_DATA"
+                        trade.pnl = net
+                        trade.r_multiple = (
+                            net / trade.risk_amount
+                            if trade.risk_amount else 0
+                        )
+                        trade.bars_held = 0
+                        trade.partial_exits = []
+                        trades.append(trade)
+                        open_trade = None
+                        remaining_size = 0.0
+
         # ---------------- Mở lệnh mới ----------------
         if (
             i < len(sig) - 1
             and open_trade is None
             and entries[i]
+            and not filled_pending_this_bar
         ):
-            entry = bar_close
-            sl = stops[i]
-
-            if np.isnan(sl) or sl >= entry:
-                continue
-
-            risk_per_unit = entry - sl
-            # Chỉ áp dụng sàn khoảng SL khi backtest có phí.
-            if costs.round_trip > 0 and risk_per_unit < entry * 0.001:
-                continue
-            risk_amount = balance * risk_pct / 100
-            size = risk_amount / risk_per_unit
-
-            t = Trade(
-                symbol=symbol,
-                entry_time=ts,
-                entry_price=entry,
-                sl=sl,
-                tp_mode=tp_mode,
-                size=size,
-                risk_amount=risk_amount,
-                adx=adx_values[i],
-                retrace_pct=retrace_values[i],
-                pa_type=(
-                    "engulfing" if pa_engulfing[i]
-                    else "pinbar" if pa_pinbar[i]
-                    else "bos" if pa_bos[i]
-                    else "none"
-                ),
-            )
-
-            # Lưu risk gốc — dùng cho MFE/MAE, không đổi dù SL có dời
-            t._initial_risk = risk_per_unit
-
-            # Thiết lập TP theo chế độ
-            if tp_mode == "sr_level":
-                res = find_resistance(high_series, i, entry)
-                # Nếu không có kháng cự rõ ràng -> dùng 2R
-                t._tp_sr = res if res else entry + 2 * risk_per_unit
-            elif tp_mode == "fib_extension":
-                t._tp1 = tp1_values[i]
-                t._tp2 = tp2_values[i]
-                # Fallback nếu Fibo không hợp lệ
-                if np.isnan(t._tp1) or t._tp1 <= entry:
-                    t._tp1 = entry + 1.5 * risk_per_unit
-                if np.isnan(t._tp2) or t._tp2 <= t._tp1:
-                    t._tp2 = entry + 3.0 * risk_per_unit
-
-            open_trade = t
-            open_idx = i
-            remaining_size = size
+            if np.isfinite(triggers[i]):
+                if pending_idx is None:
+                    pending_idx = i
+            else:
+                trade = make_trade(i, i, bar_close)
+                if trade is not None:
+                    open_trade = trade
+                    open_idx = i
+                    remaining_size = trade.size
 
     # Chuyển sang DataFrame
     if not trades:

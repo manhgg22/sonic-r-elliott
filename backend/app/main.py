@@ -7,10 +7,13 @@ from backend.app.api.routes.dashboard import router
 from backend.app.core.config import settings
 from backend.app.schemas.dashboard import HealthResponse
 from backend.app.api.dependencies import realtime_market_hub
+from paper_monitor import connect
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    database = connect(settings.database_path)
+    database.close()
     hub = realtime_market_hub()
     await hub.start()
     yield

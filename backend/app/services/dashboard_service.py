@@ -1,4 +1,10 @@
-from paper_monitor import run_cycle
+from paper_monitor import (
+    MAX_PORTFOLIO_RISK_PCT,
+    PENDING_EXPIRY_BARS,
+    RISK_PCT_PER_TRADE,
+    committed_risk_pct,
+    run_cycle,
+)
 
 
 class DashboardService:
@@ -7,7 +13,9 @@ class DashboardService:
         self.market = market
 
     def snapshot(self):
-        return self.repository.snapshot()
+        payload = self.repository.snapshot()
+        payload["risk"] = self.risk_summary()
+        return payload
 
     def run_scan(self):
         return run_cycle(self.repository.database_path)
@@ -39,3 +47,23 @@ class DashboardService:
                 }
             )
         return results
+
+    def risk_summary(self):
+        active = self.repository.active_positions()
+        committed = 0.0
+        pending = 0
+        opened = 0
+        for trade in active:
+            if trade["status"] == "PENDING":
+                pending += 1
+            else:
+                opened += 1
+            committed += committed_risk_pct(trade)
+        return {
+            "risk_per_trade_pct": RISK_PCT_PER_TRADE,
+            "max_portfolio_risk_pct": MAX_PORTFOLIO_RISK_PCT,
+            "committed_risk_pct": round(committed, 4),
+            "pending_orders": pending,
+            "open_positions": opened,
+            "pending_expiry_bars": PENDING_EXPIRY_BARS,
+        }

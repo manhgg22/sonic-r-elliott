@@ -58,6 +58,16 @@ export type TerminalSnapshot = {
   runs: Run[];
   trades: Trade[];
   events: PaperEvent[];
+  risk: RiskSummary;
+};
+
+export type RiskSummary = {
+  risk_per_trade_pct: number;
+  max_portfolio_risk_pct: number;
+  committed_risk_pct: number;
+  pending_orders: number;
+  open_positions: number;
+  pending_expiry_bars: number;
 };
 
 export type CandleRow = {
@@ -68,6 +78,8 @@ export type CandleRow = {
   close: number;
   volume: number;
   ema34: number;
+  ema34_high: number;
+  ema34_low: number;
   ema89: number;
   confirmed: boolean;
 };

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Candle, MarketState, Ticker } from "./types";
+import type { Candle, MarketState, Ticker } from "../shared/types";
 
 const initial: MarketState = {
   connected: false, status: {}, tickers: {}, candles: {}, events: [], sequence: 0

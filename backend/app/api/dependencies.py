@@ -21,7 +21,7 @@ def _realtime_instruments():
         symbol = row.get("symbol") or row.get("base")
         if symbol:
             instruments.append(symbol)
-    for row in dashboard_service().repository.open_positions():
+    for row in dashboard_service().repository.active_positions():
         base = row.get("base")
         if base:
             instruments.append(base)
