@@ -9,10 +9,14 @@ export const EMPTY_SNAPSHOT: TerminalSnapshot = {
   trades: [],
   events: [],
   risk: {
+    paper_equity_usd: 10000,
     risk_per_trade_pct: 0.5,
+    risk_per_trade_usd: 50,
     max_portfolio_risk_pct: 2,
+    max_portfolio_risk_usd: 200,
     risk_guard_enabled: true,
     committed_risk_pct: 0,
+    committed_risk_usd: 0,
     pending_orders: 0,
     open_positions: 0,
     pending_expiry_bars: 4
@@ -52,7 +56,7 @@ export const PAGE_META: Record<Page, {
   portfolio: {
     eyebrow: "Paper portfolio",
     title: "Danh mục & rủi ro",
-    description: "Đo hiệu suất theo R và kiểm soát mức phơi nhiễm."
+    description: "Đo lãi/lỗ bằng USD và kiểm soát mức phơi nhiễm."
   },
   history: {
     eyebrow: "Execution audit",

@@ -7,7 +7,7 @@ import { TablePager } from "../../components/ui/TablePager";
 import { runScanner } from "../../services/api";
 import { PAGE_META, SIGNAL_GATES } from "../../shared/constants";
 import {
-  displayText, formatNumber, isTruthyFlag, sideTone
+  displayText, formatNumber, formatUsdPrice, isTruthyFlag, sideTone
 } from "../../shared/format";
 import type { Setup, TerminalSnapshot } from "../../shared/types";
 
@@ -95,7 +95,8 @@ export function ScannerPage({ data, selected, setSelected, refresh }: {
                     <td><b>{displayText(setup.base)}</b></td>
                     <td className={sideTone(setup.side)}>{displayText(setup.side)}</td>
                     <td><Tag className={`status ${displayText(setup.status).toLowerCase()}`}>{displayText(setup.status)}</Tag></td>
-                    {[setup.bar_close, setup.entry, setup.sl, setup.tp1, setup.tp2, setup.tp2_rr].map((value, index) => <td key={index}>{formatNumber(value)}</td>)}
+                    {[setup.bar_close, setup.entry, setup.sl, setup.tp1, setup.tp2].map((value, index) => <td key={index}>{formatUsdPrice(value)}</td>)}
+                    <td>{formatNumber(setup.tp2_rr)}</td>
                     {SIGNAL_GATES.map(([key]) => (
                       <td key={key}>
                         <span className={isTruthyFlag(setup[key]) ? "gate-check passed" : "gate-check"}>
@@ -125,9 +126,9 @@ export function ScannerPage({ data, selected, setSelected, refresh }: {
                     </Tag>
                   </header>
                   <div className="mobile-metrics">
-                    <span>Entry<b>{formatNumber(setup.entry)}</b></span>
-                    <span>SL<b className="negative">{formatNumber(setup.sl)}</b></span>
-                    <span>TP2<b className="positive">{formatNumber(setup.tp2)}</b></span>
+                    <span>Entry<b>{formatUsdPrice(setup.entry)}</b></span>
+                    <span>SL<b className="negative">{formatUsdPrice(setup.sl)}</b></span>
+                    <span>TP2<b className="positive">{formatUsdPrice(setup.tp2)}</b></span>
                     <span>Gate<b>{passed}/{SIGNAL_GATES.length}</b></span>
                   </div>
                   <footer>{displayText(setup.missing)}</footer>
@@ -151,7 +152,7 @@ export function ScannerPage({ data, selected, setSelected, refresh }: {
           </div>
           <GateList setup={selected} />
           <div className="scan-levels">
-            <Level label="Entry" value={selected?.entry} tone="live-text" />
+            <Level label="Entry" value={selected?.entry} tone="live-text" currency />
             <Level label="R:R TP2" value={selected?.tp2_rr} />
           </div>
           <Button type="primary" className="primary wide" icon={<Bell />}>TẠO CẢNH BÁO <ChevronRight /></Button>

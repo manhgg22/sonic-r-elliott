@@ -2,7 +2,7 @@ import { ArrowUpRight, BookOpen, Code2, Database, Radio, Server } from "lucide-r
 import { Tag } from "antd";
 import { Kpi, Panel } from "../../components/ui/Panel";
 import { PAGE_META } from "../../shared/constants";
-import { displayText, formatNumber } from "../../shared/format";
+import { displayText, formatUsdPrice } from "../../shared/format";
 import type { MarketState } from "../../shared/types";
 
 export function ApiPage({ market }: { market: MarketState }) {
@@ -37,11 +37,11 @@ export function ApiPage({ market }: { market: MarketState }) {
                   return (
                     <tr key={id}>
                       <td><b>{id}</b></td>
-                      <td>{formatNumber(ticker.last)}</td>
-                      <td>{formatNumber(ticker.bid)}</td>
-                      <td>{formatNumber(ticker.ask)}</td>
+                      <td>{formatUsdPrice(ticker.last)}</td>
+                      <td>{formatUsdPrice(ticker.bid)}</td>
+                      <td>{formatUsdPrice(ticker.ask)}</td>
                       <td className={change >= 0 ? "positive" : "negative"}>{change.toFixed(2)}%</td>
-                      <td>{formatNumber(candle?.close)}</td>
+                      <td>{formatUsdPrice(candle?.close)}</td>
                       <td><Tag className={candle?.confirmed ? "status closed" : "status live-status"}>{candle?.confirmed ? "CLOSED" : "LIVE"}</Tag></td>
                     </tr>
                   );

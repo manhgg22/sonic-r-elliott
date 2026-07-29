@@ -107,7 +107,9 @@ chỉ chuyển từ `PENDING` sang `OPEN` khi giá chạm trigger và tự hết
 M15. TP1 chốt 50%, TP2 chốt 30% và giữ 20% runner theo EMA34 H1. Dashboard có
 funnel 7 gate, snapshot scanner, trạng thái pending/open, risk thật từ engine,
 MFE/MAE, lịch sử sự kiện và equity mô hình. Mặc định mỗi lệnh cam kết 0,5% và
-tổng risk danh mục bị chặn ở 2%; cấu hình nằm trong `.env.example`. Nếu SL/TP
+tổng risk danh mục bị chặn ở 2% trên vốn paper mặc định 10.000 USD; cấu hình
+`SONIC_PAPER_EQUITY_USD` nằm trong `.env.example`. Dashboard quy đổi và hiển thị
+risk, giá trị vị thế, P&L, MFE/MAE và lifecycle event bằng USD. Nếu SL/TP
 cùng chạm trong một nến, engine ưu tiên SL. Đây là OHLCV paper model, chưa tính
 funding/slippage/fill. Ứng dụng không giữ API key và **không gửi lệnh thật**.
 

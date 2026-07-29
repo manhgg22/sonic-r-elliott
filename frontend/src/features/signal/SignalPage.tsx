@@ -39,11 +39,11 @@ export function SignalPage({ data, market, selected, setSelected }: {
           </div>
           <GateList setup={selected} />
           <div className="level-group">
-            <Level label="Vùng vào lệnh" value={selected?.entry} tone="live-text" />
-            <Level label="Dừng lỗ" value={selected?.sl} tone="negative" />
-            <Level label="Chốt lời 1" value={selected?.tp1} tone="positive" />
-            <Level label="Chốt lời 2" value={selected?.tp2} tone="positive" />
-            <Level label="Trailing EMA34 H1" value={selected?.trail_h1} tone="warning" />
+            <Level label="Vùng vào lệnh" value={selected?.entry} tone="live-text" currency />
+            <Level label="Dừng lỗ" value={selected?.sl} tone="negative" currency />
+            <Level label="Chốt lời 1" value={selected?.tp1} tone="positive" currency />
+            <Level label="Chốt lời 2" value={selected?.tp2} tone="positive" currency />
+            <Level label="Trailing EMA34 H1" value={selected?.trail_h1} tone="warning" currency />
           </div>
           <div className="thesis">
             <b>Price Action</b><p>{displayText(selected?.pa)}</p>

@@ -5,7 +5,7 @@ import { Kpi, Panel } from "../../components/ui/Panel";
 import { TablePager } from "../../components/ui/TablePager";
 import { PAGE_META } from "../../shared/constants";
 import {
-  displayText, formatDateTime, formatNumber, sideTone
+  displayText, formatDateTime, formatUsd, formatUsdPrice, sideTone
 } from "../../shared/format";
 import type { TerminalSnapshot, Trade } from "../../shared/types";
 
@@ -35,12 +35,12 @@ export function HistoryPage({ data }: { data: TerminalSnapshot }) {
     const matchQuery = displayText(trade.base)
       .toLowerCase()
       .includes(query.trim().toLowerCase());
-    const totalR = numeric(trade.total_r);
+    const totalUsd = numeric(trade.total_pnl_usd);
     const matchResult =
       resultFilter === "ALL" ||
-      (resultFilter === "WIN" && trade.status === "CLOSED" && totalR > 0) ||
-      (resultFilter === "LOSS" && trade.status === "CLOSED" && totalR < 0) ||
-      (resultFilter === "FLAT" && trade.status === "CLOSED" && totalR === 0);
+      (resultFilter === "WIN" && trade.status === "CLOSED" && totalUsd > 0) ||
+      (resultFilter === "LOSS" && trade.status === "CLOSED" && totalUsd < 0) ||
+      (resultFilter === "FLAT" && trade.status === "CLOSED" && totalUsd === 0);
     return matchStatus && matchSide && matchQuery && matchResult;
   }).sort((left, right) => numeric(right.id) - numeric(left.id)),
   [data.trades, query, resultFilter, side, status]);
@@ -58,13 +58,15 @@ export function HistoryPage({ data }: { data: TerminalSnapshot }) {
   const closed = data.trades.filter((trade) => trade.status === "CLOSED");
   const expired = data.trades.filter((trade) => trade.status === "EXPIRED");
   const filled = data.trades.filter((trade) => trade.filled_at);
-  const result = closed.reduce((sum, trade) => sum + numeric(trade.total_r), 0);
+  const result = closed.reduce(
+    (sum, trade) => sum + numeric(trade.total_pnl_usd), 0
+  );
   const average = closed.length ? result / closed.length : 0;
   const grossProfit = closed.reduce(
-    (sum, trade) => sum + Math.max(0, numeric(trade.total_r)), 0
+    (sum, trade) => sum + Math.max(0, numeric(trade.total_pnl_usd)), 0
   );
   const grossLoss = Math.abs(closed.reduce(
-    (sum, trade) => sum + Math.min(0, numeric(trade.total_r)), 0
+    (sum, trade) => sum + Math.min(0, numeric(trade.total_pnl_usd)), 0
   ));
   const profitFactor = grossLoss ? grossProfit / grossLoss : 0;
 
@@ -81,10 +83,10 @@ export function HistoryPage({ data }: { data: TerminalSnapshot }) {
         <Kpi label="Đã khớp" value={String(filled.length)} note="có thời điểm fill" />
         <Kpi label="Đã đóng" value={String(closed.length)} note="có kết quả cuối" />
         <Kpi label="Hết hạn" value={String(expired.length)} note="không chạm trigger" />
-        <Kpi label="R trung bình" value={`${average >= 0 ? "+" : ""}${average.toFixed(2)}R`}
-          tone={average >= 0 ? "positive" : "negative"} note="trên lệnh đã đóng" />
+        <Kpi label="P&L trung bình" value={formatUsd(average, true)}
+          tone={average >= 0 ? "positive" : "negative"} note="USD trên lệnh đã đóng" />
         <Kpi label="Profit factor" value={profitFactor.toFixed(2)}
-          tone={profitFactor >= 1 ? "positive" : "negative"} note={`${result >= 0 ? "+" : ""}${result.toFixed(2)}R tổng`} />
+          tone={profitFactor >= 1 ? "positive" : "negative"} note={`${formatUsd(result, true)} tổng`} />
       </div>
       <div className="history-layout">
         <Panel title="Sổ lệnh paper" meta={`${rows.length} BẢN GHI`} icon={<History />}>
@@ -115,13 +117,13 @@ export function HistoryPage({ data }: { data: TerminalSnapshot }) {
                   {[
                     "ID", "Mã", "Side", "Trạng thái", "Armed", "Filled",
                     "Closed", "Entry", "Exit", "Initial SL", "Lý do",
-                    "Kết quả", "MFE", "MAE"
+                    "Giá trị vị thế", "Risk USD", "Kết quả", "MFE", "MAE"
                   ].map((heading) => <th key={heading}>{heading}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {pageRows.map((trade) => {
-                  const totalR = numeric(trade.total_r);
+                  const totalUsd = numeric(trade.total_pnl_usd);
                   return (
                     <tr key={displayText(trade.id)}>
                       <td>#{displayText(trade.id)}</td>
@@ -135,17 +137,19 @@ export function HistoryPage({ data }: { data: TerminalSnapshot }) {
                       <td>{formatDateTime(trade.opened_at)}</td>
                       <td>{formatDateTime(trade.filled_at)}</td>
                       <td>{formatDateTime(trade.closed_at)}</td>
-                      <td>{formatNumber(trade.entry)}</td>
-                      <td>{formatNumber(trade.exit_price)}</td>
-                      <td>{formatNumber(trade.initial_sl)}</td>
+                      <td>{formatUsdPrice(trade.entry)}</td>
+                      <td>{formatUsdPrice(trade.exit_price)}</td>
+                      <td>{formatUsdPrice(trade.initial_sl)}</td>
                       <td>{displayText(trade.exit_reason)}</td>
-                      <td className={totalR >= 0 ? "positive" : "negative"}>
-                        {trade.total_r == null
+                      <td>{formatUsd(trade.entry_notional_usd)}</td>
+                      <td>{formatUsd(trade.risk_amount_usd)}</td>
+                      <td className={totalUsd >= 0 ? "positive" : "negative"}>
+                        {trade.total_pnl_usd == null
                           ? "—"
-                          : `${totalR >= 0 ? "+" : ""}${totalR.toFixed(2)}R`}
+                          : formatUsd(totalUsd, true)}
                       </td>
-                      <td>{numeric(trade.mfe_r).toFixed(2)}R</td>
-                      <td>{numeric(trade.mae_r).toFixed(2)}R</td>
+                      <td>{formatUsd(trade.mfe_usd)}</td>
+                      <td>{formatUsd(trade.mae_usd)}</td>
                     </tr>
                   );
                 })}
@@ -154,7 +158,7 @@ export function HistoryPage({ data }: { data: TerminalSnapshot }) {
           </div>
           <div className="mobile-list">
             {pageRows.map((trade) => {
-              const totalR = numeric(trade.total_r);
+              const totalUsd = numeric(trade.total_pnl_usd);
               return (
                 <article className="mobile-data-card" key={displayText(trade.id)}>
                   <header>
@@ -168,10 +172,12 @@ export function HistoryPage({ data }: { data: TerminalSnapshot }) {
                     </Tag>
                   </header>
                   <div className="mobile-metrics">
-                    <span>Entry<b>{formatNumber(trade.entry)}</b></span>
-                    <span>Exit<b>{formatNumber(trade.exit_price)}</b></span>
-                    <span>Kết quả<b className={totalR >= 0 ? "positive" : "negative"}>
-                      {trade.total_r == null ? "—" : `${totalR >= 0 ? "+" : ""}${totalR.toFixed(2)}R`}
+                    <span>Entry<b>{formatUsdPrice(trade.entry)}</b></span>
+                    <span>Exit<b>{formatUsdPrice(trade.exit_price)}</b></span>
+                    <span>Giá trị vị thế<b>{formatUsd(trade.entry_notional_usd)}</b></span>
+                    <span>Risk<b className="negative">{formatUsd(trade.risk_amount_usd)}</b></span>
+                    <span>Kết quả<b className={totalUsd >= 0 ? "positive" : "negative"}>
+                      {trade.total_pnl_usd == null ? "—" : formatUsd(totalUsd, true)}
                     </b></span>
                   </div>
                   <div className="mobile-timeline">
@@ -208,9 +214,9 @@ export function HistoryPage({ data }: { data: TerminalSnapshot }) {
                   </b>
                   <small>{displayText(event.event)} · {formatDateTime(event.event_at)}</small>
                 </div>
-                <strong className={numeric(event.delta_r) >= 0 ? "positive" : "negative"}>
-                  {formatNumber(event.price)}
-                  <small>{numeric(event.delta_r) >= 0 ? "+" : ""}{numeric(event.delta_r).toFixed(2)}R</small>
+                <strong className={numeric(event.delta_usd) >= 0 ? "positive" : "negative"}>
+                  {formatUsdPrice(event.price)}
+                  <small>{formatUsd(event.delta_usd, true)}</small>
                 </strong>
               </div>
             ))}

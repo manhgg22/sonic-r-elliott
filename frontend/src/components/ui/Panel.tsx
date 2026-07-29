@@ -1,3 +1,6 @@
+import { formatNumber, formatUsdPrice } from "../../shared/format";
+
+
 type PanelProps = {
   title: string;
   meta?: string;
@@ -36,11 +39,18 @@ export function Kpi({ label, value, tone = "", note }: {
   );
 }
 
-export function Level({ label, value, tone = "" }: {
+export function Level({ label, value, tone = "", currency = false }: {
   label: string;
   value: unknown;
   tone?: string;
+  currency?: boolean;
 }) {
-  return <div className="level"><span>{label}</span><b className={tone}>{formatNumber(value)}</b></div>;
+  return (
+    <div className="level">
+      <span>{label}</span>
+      <b className={tone}>
+        {currency ? formatUsdPrice(value) : formatNumber(value)}
+      </b>
+    </div>
+  );
 }
-import { formatNumber } from "../../shared/format";

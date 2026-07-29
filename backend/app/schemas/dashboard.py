@@ -9,10 +9,14 @@ class HealthResponse(BaseModel):
 
 
 class RiskSummary(BaseModel):
+    paper_equity_usd: float
     risk_per_trade_pct: float
+    risk_per_trade_usd: float
     max_portfolio_risk_pct: float
+    max_portfolio_risk_usd: float
     risk_guard_enabled: bool
     committed_risk_pct: float
+    committed_risk_usd: float
     pending_orders: int
     open_positions: int
     pending_expiry_bars: int
@@ -37,6 +41,10 @@ class LivePosition(BaseModel):
     instrument_id: str
     last: float
     live_r: float
+    live_pnl_usd: float
+    risk_amount_usd: float
+    position_size: float
+    entry_notional_usd: float
 
 
 class LivePositionsResponse(BaseModel):

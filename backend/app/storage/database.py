@@ -209,6 +209,9 @@ def initialize_schema(connection: DatabaseConnection) -> None:
             mfe_r DOUBLE PRECISION NOT NULL DEFAULT 0,
             mae_r DOUBLE PRECISION NOT NULL DEFAULT 0,
             risk_pct DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+            risk_amount_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+            position_size DOUBLE PRECISION NOT NULL DEFAULT 0,
+            entry_notional_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
             expires_at TEXT, filled_at TEXT, closed_at TEXT,
             exit_price DOUBLE PRECISION, exit_reason TEXT,
             total_r DOUBLE PRECISION
@@ -302,7 +305,9 @@ def portfolio_risk_guard_enabled(connection: DatabaseConnection) -> bool:
 
 
 def apply_legacy_migrations(
-    connection: DatabaseConnection, risk_pct_per_trade: float
+    connection: DatabaseConnection,
+    risk_pct_per_trade: float,
+    paper_equity_usd: float,
 ) -> None:
     setup_migrations = {
         "f_regime": "INTEGER",
@@ -323,6 +328,9 @@ def apply_legacy_migrations(
         ),
         "expires_at": "TEXT",
         "filled_at": "TEXT",
+        "risk_amount_usd": "DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "position_size": "DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "entry_notional_usd": "DOUBLE PRECISION NOT NULL DEFAULT 0",
     }
     with connection.transaction():
         existing = _table_columns(connection, "latest_setups")
@@ -356,19 +364,46 @@ def apply_legacy_migrations(
               )
             """
         )
+        connection.execute(
+            """
+            UPDATE paper_trades
+            SET risk_amount_usd = ? * risk_pct / 100
+            WHERE risk_amount_usd <= 0
+            """,
+            (float(paper_equity_usd),),
+        )
+        connection.execute(
+            """
+            UPDATE paper_trades
+            SET position_size = risk_amount_usd / risk
+            WHERE position_size <= 0 AND risk > 0
+            """
+        )
+        connection.execute(
+            """
+            UPDATE paper_trades
+            SET entry_notional_usd = position_size * entry
+            WHERE entry_notional_usd <= 0 AND position_size > 0
+            """
+        )
 
 
 def connect_database(
     target: str | Path | None = None,
     *,
     risk_pct_per_trade: float = 0.5,
+    paper_equity_usd: float = 10000,
     initialize: bool = True,
 ) -> DatabaseConnection:
     connection = _connect_raw(resolve_database_target(target))
     if initialize:
         try:
             initialize_schema(connection)
-            apply_legacy_migrations(connection, risk_pct_per_trade)
+            apply_legacy_migrations(
+                connection,
+                risk_pct_per_trade,
+                paper_equity_usd,
+            )
         except BaseException:
             connection.close()
             raise

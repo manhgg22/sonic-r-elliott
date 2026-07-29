@@ -7,6 +7,35 @@ export function formatNumber(value: unknown, digits = 4) {
   });
 }
 
+export function formatUsd(value: unknown, signed = false) {
+  if (value == null || value === "") return "—";
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return "—";
+  const formatted = Math.abs(numericValue).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+  if (numericValue < 0) return `-${formatted}`;
+  return signed && numericValue > 0 ? `+${formatted}` : formatted;
+}
+
+export function formatUsdPrice(value: unknown) {
+  if (value == null || value === "") return "—";
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return "—";
+  const absolute = Math.abs(numericValue);
+  const maximumFractionDigits =
+    absolute >= 1000 ? 2 : absolute >= 1 ? 4 : absolute >= 0.01 ? 6 : 8;
+  return numericValue.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits
+  });
+}
+
 export const displayText = (value: unknown) => String(value ?? "—");
 
 export const isTruthyFlag = (value: unknown) =>

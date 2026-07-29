@@ -62,10 +62,14 @@ export type TerminalSnapshot = {
 };
 
 export type RiskSummary = {
+  paper_equity_usd: number;
   risk_per_trade_pct: number;
+  risk_per_trade_usd: number;
   max_portfolio_risk_pct: number;
+  max_portfolio_risk_usd: number;
   risk_guard_enabled: boolean;
   committed_risk_pct: number;
+  committed_risk_usd: number;
   pending_orders: number;
   open_positions: number;
   pending_expiry_bars: number;

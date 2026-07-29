@@ -7,7 +7,9 @@ import { MarketChart } from "../../components/trading/MarketChart";
 import { GateList, SetupPicker } from "../../components/trading/SignalControls";
 import { Level, Panel } from "../../components/ui/Panel";
 import { PAGE_META } from "../../shared/constants";
-import { displayText, formatNumber, sideTone } from "../../shared/format";
+import {
+  displayText, formatUsd, formatUsdPrice, sideTone
+} from "../../shared/format";
 import type { MarketState, Setup, TerminalSnapshot } from "../../shared/types";
 
 function Watchlist({ market }: { market: MarketState }) {
@@ -27,7 +29,7 @@ function Watchlist({ market }: { market: MarketState }) {
               <span>{id.split("-")[0]}<small>USDT PERP</small></span>
             </div>
             <b>
-              {formatNumber(ticker?.last)}
+              {formatUsdPrice(ticker?.last)}
               <small className={change >= 0 ? "positive" : "negative"}>
                 {change >= 0 ? "+" : ""}{change.toFixed(2)}%
               </small>
@@ -62,7 +64,7 @@ function MarketSummary({ data, market }: {
       <div>
         <span className="summary-icon green"><CircleDollarSign /></span>
         <p><small>Open / Pending</small><b>{open.toString().padStart(2, "0")} / {pending}</b></p>
-        <em>Risk {data.risk.risk_per_trade_pct.toFixed(2)}% / lệnh</em>
+        <em>Risk {formatUsd(data.risk.risk_per_trade_usd)} / lệnh</em>
       </div>
     </div>
   );
@@ -111,10 +113,10 @@ export function TerminalPage({ data, market, selected, setSelected }: {
               <div><small>{base}/USDT</small><b className={sideTone(selected?.side)}>{displayText(selected?.side)}</b></div>
               <Tag className={`status ${displayText(selected?.status).toLowerCase()}`}>{displayText(selected?.status)}</Tag>
             </div>
-            <Level label="Vùng vào lệnh" value={selected?.entry} tone="live-text" />
-            <Level label="Dừng lỗ" value={selected?.sl} tone="negative" />
-            <Level label="Chốt lời 1" value={selected?.tp1} tone="positive" />
-            <Level label="Chốt lời 2" value={selected?.tp2} tone="positive" />
+            <Level label="Vùng vào lệnh" value={selected?.entry} tone="live-text" currency />
+            <Level label="Dừng lỗ" value={selected?.sl} tone="negative" currency />
+            <Level label="Chốt lời 1" value={selected?.tp1} tone="positive" currency />
+            <Level label="Chốt lời 2" value={selected?.tp2} tone="positive" currency />
             <Level label="Tỷ lệ R:R" value={selected?.tp2_rr} />
             <Level label="PVSRA volume" value={selected?.pva_ratio} tone={selected?.pva_climax ? "warning" : ""} />
           </Panel>
@@ -125,7 +127,7 @@ export function TerminalPage({ data, market, selected, setSelected }: {
                   {displayText(trade.base)} · <i className={sideTone(trade.side)}>{displayText(trade.side)}</i>
                   {" · "}{displayText(trade.status)}
                 </span>
-                <b>{formatNumber(trade.entry)}</b>
+                <b>{formatUsd(trade.entry_notional_usd)}</b>
               </div>
             ))}
             {!active.length && <div className="empty"><ShieldCheck />Chưa có lệnh paper hoạt động</div>}
@@ -133,7 +135,7 @@ export function TerminalPage({ data, market, selected, setSelected }: {
           <Panel title="Hoạt động gần đây" meta="EVENTS" icon={<Activity />}>
             {data.events.slice(0, 4).map((event, index) => (
               <div className="mini-row" key={index}>
-                <span>{displayText(event.event)}</span><b>{formatNumber(event.price)}</b>
+                <span>{displayText(event.event)}</span><b>{formatUsd(event.delta_usd, true)}</b>
               </div>
             ))}
             {!data.events.length && <div className="empty compact">Đang chờ sự kiện mới</div>}

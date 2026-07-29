@@ -34,6 +34,7 @@ from core.trade_setup import (
 from paper_monitor import (
     MAX_NEW_TRADES_PER_WEEK,
     MAX_PORTFOLIO_RISK_PCT,
+    PAPER_EQUITY_USD,
     PENDING_EXPIRY_BARS,
     RISK_PCT_PER_TRADE,
     advance_paper_trade,
@@ -441,6 +442,12 @@ def test_ready_setup_is_armed_then_filled_on_next_bar():
         ).fetchone()
         assert pending["status"] == "PENDING"
         assert pending["risk_pct"] == RISK_PCT_PER_TRADE
+        expected_risk_usd = PAPER_EQUITY_USD * RISK_PCT_PER_TRADE / 100
+        assert pending["risk_amount_usd"] == expected_risk_usd
+        assert pending["position_size"] == expected_risk_usd / 10
+        assert pending["entry_notional_usd"] == (
+            pending["position_size"] * pending["entry"]
+        )
         assert pd.Timestamp(pending["expires_at"]) == (
             signal_time + pd.Timedelta(minutes=15 * PENDING_EXPIRY_BARS)
         )

@@ -48,6 +48,17 @@ def test_sqlite_schema_and_cross_process_lock(tmp_path):
             "scan_lock",
             "runtime_settings",
         }.issubset(tables)
+        trade_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(paper_trades)"
+            )
+        }
+        assert {
+            "risk_amount_usd",
+            "position_size",
+            "entry_notional_usd",
+        }.issubset(trade_columns)
         assert portfolio_risk_guard_enabled(connection)
         set_runtime_setting(
             connection,

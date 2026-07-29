@@ -8,6 +8,7 @@ import {
   UTCTimestamp
 } from "lightweight-charts";
 import { getCandles } from "../../services/api";
+import { formatUsdPrice } from "../../shared/format";
 import type { Candle, CandleRow, Setup } from "../../shared/types";
 
 type Props = {
@@ -88,6 +89,9 @@ export function MarketChart({ instrumentId, live, setup, height = 540 }: Props) 
         textColor: "#6f7b94",
         fontFamily: "\"Be Vietnam Pro\", Arial, sans-serif",
         fontSize: 12
+      },
+      localization: {
+        priceFormatter: (price: number) => formatUsdPrice(price)
       },
       grid: {
         vertLines: { color: "#1a2235" },

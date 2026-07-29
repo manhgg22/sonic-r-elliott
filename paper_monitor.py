@@ -29,6 +29,7 @@ RISK_PCT_PER_TRADE = float(os.getenv("SONIC_RISK_PCT_PER_TRADE", "0.5"))
 MAX_PORTFOLIO_RISK_PCT = float(
     os.getenv("SONIC_MAX_PORTFOLIO_RISK_PCT", "2.0")
 )
+PAPER_EQUITY_USD = float(os.getenv("SONIC_PAPER_EQUITY_USD", "10000"))
 if PENDING_EXPIRY_BARS < 1:
     raise ValueError("SONIC_PENDING_EXPIRY_BARS phải >= 1")
 if not 0 < RISK_PCT_PER_TRADE <= MAX_PORTFOLIO_RISK_PCT:
@@ -36,6 +37,8 @@ if not 0 < RISK_PCT_PER_TRADE <= MAX_PORTFOLIO_RISK_PCT:
         "SONIC_RISK_PCT_PER_TRADE phải > 0 và không vượt "
         "SONIC_MAX_PORTFOLIO_RISK_PCT"
     )
+if PAPER_EQUITY_USD <= 0:
+    raise ValueError("SONIC_PAPER_EQUITY_USD phải > 0")
 SCAN_COLUMNS = [
     "rank", "name", "symbol", "base", "side", "status", "actionable",
     "signal_time", "bar_open", "bar_high", "bar_low", "bar_close",
@@ -51,6 +54,7 @@ def connect(db_target=None):
     return connect_database(
         db_target,
         risk_pct_per_trade=RISK_PCT_PER_TRADE,
+        paper_equity_usd=PAPER_EQUITY_USD,
     )
 
 
@@ -107,6 +111,19 @@ def committed_risk_pct(trade) -> float:
         + float(state.get("remaining") or 0) * stop_r
     )
     return max(0.0, -result_at_stop_r) * risk_pct
+
+
+def committed_risk_usd(trade) -> float:
+    """Rủi ro tối đa còn lại tại current SL, tính bằng USD."""
+    state = dict(trade)
+    risk_pct = float(state.get("risk_pct") or RISK_PCT_PER_TRADE)
+    risk_amount = float(
+        state.get("risk_amount_usd")
+        or PAPER_EQUITY_USD * risk_pct / 100
+    )
+    if risk_pct <= 0:
+        return 0.0
+    return committed_risk_pct(state) / risk_pct * risk_amount
 
 
 def save_scan(conn, report, scanned_at, duration):
@@ -358,6 +375,11 @@ def open_ready_trades(conn, report):
             signal_time = _value(row["signal_time"])
             key = f"{row['symbol']}|{row['side']}|{signal_time}"
             risk = abs(float(row["entry"]) - float(row["sl"]))
+            if risk <= 0:
+                continue
+            risk_amount_usd = PAPER_EQUITY_USD * RISK_PCT_PER_TRADE / 100
+            position_size = risk_amount_usd / risk
+            entry_notional_usd = position_size * float(row["entry"])
             expires_at = (
                 pd.Timestamp(row["signal_time"])
                 + pd.Timedelta(minutes=15 * PENDING_EXPIRY_BARS)
@@ -368,9 +390,10 @@ def open_ready_trades(conn, report):
                     signal_key, symbol, base, name, side, status, opened_at,
                     entry, initial_sl, current_sl, tp1, tp2, tp1_rr, tp2_rr,
                     trail_h1, risk, remaining, realized_r, tp1_hit, tp2_hit,
-                    last_bar_time, mfe_r, mae_r, risk_pct, expires_at
+                    last_bar_time, mfe_r, mae_r, risk_pct, expires_at,
+                    risk_amount_usd, position_size, entry_notional_usd
                 ) VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          ?, 1, 0, 0, 0, ?, 0, 0, ?, ?)
+                          ?, 1, 0, 0, 0, ?, 0, 0, ?, ?, ?, ?, ?)
                 ON CONFLICT (signal_key) DO NOTHING
                 RETURNING id
                 """,
@@ -380,7 +403,8 @@ def open_ready_trades(conn, report):
                     float(row["sl"]), float(row["tp1"]), float(row["tp2"]),
                     float(row["tp1_rr"]), float(row["tp2_rr"]),
                     _value(row.get("trail_h1")), risk, signal_time,
-                    RISK_PCT_PER_TRADE, expires_at,
+                    RISK_PCT_PER_TRADE, expires_at, risk_amount_usd,
+                    position_size, entry_notional_usd,
                 ),
             )
             inserted = cursor.fetchone()
