@@ -12,6 +12,7 @@ import pandas as pd
 
 from backend.app.storage.database import (
     connect_database,
+    portfolio_risk_guard_enabled,
     resolve_database_target,
     scalar,
 )
@@ -324,6 +325,7 @@ def open_ready_trades(conn, report):
     opened = 0
     ready = report[(report["status"] == "READY") & report["actionable"].astype(bool)]
     with conn.transaction():
+        risk_guard_enabled = portfolio_risk_guard_enabled(conn)
         week_cutoff = (
             pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
         ).isoformat()
@@ -341,7 +343,11 @@ def open_ready_trades(conn, report):
         for row in ready.to_dict("records"):
             if opened_this_week >= MAX_NEW_TRADES_PER_WEEK:
                 break
-            if committed_risk + RISK_PCT_PER_TRADE > MAX_PORTFOLIO_RISK_PCT:
+            if (
+                risk_guard_enabled
+                and committed_risk + RISK_PCT_PER_TRADE
+                > MAX_PORTFOLIO_RISK_PCT
+            ):
                 break
             if conn.execute(
                 "SELECT 1 FROM paper_trades "

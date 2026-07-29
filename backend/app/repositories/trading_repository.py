@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from backend.app.storage.database import connect_database
+from backend.app.storage.database import (
+    RISK_GUARD_SETTING_KEY,
+    connect_database,
+    portfolio_risk_guard_enabled,
+    set_runtime_setting,
+)
 
 
 class TradingRepository:
@@ -57,3 +62,15 @@ class TradingRepository:
             "SELECT * FROM paper_trades "
             "WHERE status IN ('PENDING', 'OPEN') ORDER BY opened_at DESC"
         )
+
+    def portfolio_risk_guard_enabled(self) -> bool:
+        with self._connect() as connection:
+            return portfolio_risk_guard_enabled(connection)
+
+    def set_portfolio_risk_guard(self, enabled: bool) -> None:
+        with self._connect() as connection:
+            set_runtime_setting(
+                connection,
+                RISK_GUARD_SETTING_KEY,
+                "true" if enabled else "false",
+            )

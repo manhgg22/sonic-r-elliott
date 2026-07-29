@@ -16,6 +16,8 @@ from backend.app.core.config import settings
 from backend.app.schemas.dashboard import (
     CandleResponse,
     LivePositionsResponse,
+    RiskGuardUpdate,
+    RiskSummary,
     ScanResponse,
     SnapshotResponse,
     RealtimeSnapshotResponse,
@@ -108,6 +110,18 @@ def realtime_console():
 )
 def get_snapshot(service: DashboardService = Depends(dashboard_service)):
     return service.snapshot()
+
+
+@router.post(
+    "/risk/portfolio-guard",
+    response_model=RiskSummary,
+    summary="Enable or disable the paper portfolio risk cap",
+)
+def set_portfolio_risk_guard(
+    payload: RiskGuardUpdate,
+    service: DashboardService = Depends(dashboard_service),
+):
+    return service.set_portfolio_risk_guard(payload.enabled)
 
 
 @router.get("/positions/live", response_model=LivePositionsResponse)

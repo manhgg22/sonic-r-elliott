@@ -1,4 +1,6 @@
-import type { CandleRow, TerminalSnapshot } from "../shared/types";
+import type {
+  CandleRow, RiskSummary, TerminalSnapshot
+} from "../shared/types";
 
 export class ApiError extends Error {
   status: number;
@@ -81,3 +83,19 @@ export const runScanner = async () => {
   if (!response.ok) throw await errorFrom(response);
   return response.json();
 };
+
+export async function setPortfolioRiskGuard(
+  enabled: boolean
+): Promise<RiskSummary> {
+  const response = await fetch("/api/v1/risk/portfolio-guard", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ enabled })
+  });
+  if (!response.ok) throw await errorFrom(response);
+  return response.json() as Promise<RiskSummary>;
+}

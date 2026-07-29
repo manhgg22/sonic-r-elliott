@@ -52,6 +52,10 @@ from backtest.regime import (
     tag_trades_with_regime,
 )
 from data import loader
+from backend.app.storage.database import (
+    RISK_GUARD_SETTING_KEY,
+    set_runtime_setting,
+)
 
 
 def make_synthetic(n=6000, seed=42, start="2024-01-01"):
@@ -543,6 +547,43 @@ def test_portfolio_risk_guardrail_limits_new_pending_orders():
             "WHERE status IN ('PENDING', 'OPEN')"
         ).fetchone()[0]
         assert committed <= MAX_PORTFOLIO_RISK_PCT
+        connection.close()
+
+
+def test_portfolio_risk_guardrail_can_be_disabled_for_paper_testing():
+    with TemporaryDirectory() as directory:
+        connection = connect(Path(directory) / "paper.db")
+        set_runtime_setting(
+            connection,
+            RISK_GUARD_SETTING_KEY,
+            "false",
+        )
+        signal_time = pd.Timestamp("2026-01-05T13:00:00Z")
+        rows = [{
+            "symbol": f"TEST{index}/USDT:USDT",
+            "base": f"TEST{index}",
+            "name": f"Test {index}",
+            "side": "LONG",
+            "status": "READY",
+            "actionable": True,
+            "signal_time": signal_time,
+            "entry": 110.0,
+            "sl": 100.0,
+            "tp1": 125.0,
+            "tp2": 140.0,
+            "tp1_rr": 1.5,
+            "tp2_rr": 3.0,
+            "trail_h1": 101.0,
+        } for index in range(10)]
+
+        opened = open_ready_trades(connection, pd.DataFrame(rows))
+
+        assert opened == MAX_NEW_TRADES_PER_WEEK
+        committed = connection.execute(
+            "SELECT SUM(risk_pct) FROM paper_trades "
+            "WHERE status IN ('PENDING', 'OPEN')"
+        ).fetchone()[0]
+        assert committed > MAX_PORTFOLIO_RISK_PCT
         connection.close()
 
 

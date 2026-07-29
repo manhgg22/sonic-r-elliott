@@ -11,6 +11,7 @@ export const EMPTY_SNAPSHOT: TerminalSnapshot = {
   risk: {
     risk_per_trade_pct: 0.5,
     max_portfolio_risk_pct: 2,
+    risk_guard_enabled: true,
     committed_risk_pct: 0,
     pending_orders: 0,
     open_positions: 0,

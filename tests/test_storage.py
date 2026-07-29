@@ -4,9 +4,12 @@ import pandas as pd
 import pytest
 
 from backend.app.storage.database import (
+    RISK_GUARD_SETTING_KEY,
     connect_database,
+    portfolio_risk_guard_enabled,
     resolve_database_target,
     scalar,
+    set_runtime_setting,
 )
 from paper_monitor import (
     acquire_scan_lock,
@@ -43,7 +46,18 @@ def test_sqlite_schema_and_cross_process_lock(tmp_path):
             "paper_trades",
             "paper_events",
             "scan_lock",
+            "runtime_settings",
         }.issubset(tables)
+        assert portfolio_risk_guard_enabled(connection)
+        set_runtime_setting(
+            connection,
+            RISK_GUARD_SETTING_KEY,
+            "false",
+        )
+        assert not portfolio_risk_guard_enabled(connection)
+        connection.close()
+        connection = connect_database(tmp_path / "paper.db")
+        assert not portfolio_risk_guard_enabled(connection)
         assert acquire_scan_lock(connection, "test")
         assert not acquire_scan_lock(connection, "second")
         release_scan_lock(connection)

@@ -255,6 +255,14 @@ tbody tr.selected { box-shadow: inset 2px 0 var(--cyan); }
 .portfolio-grid { display: grid; grid-template-columns: minmax(680px, 1fr) 310px; gap: 12px; align-items: start; }
 .portfolio-grid .table-wrap { min-height: 304px; }
 .table-empty { margin-top: -240px; pointer-events: none; }
+.risk-guard-toggle {
+  margin: 14px 14px 0; padding: 12px; border: 1px solid var(--line);
+  border-radius: 10px; display: flex; align-items: center;
+  justify-content: space-between; gap: 12px; background: rgba(13,18,32,.7);
+}
+.risk-guard-toggle span { min-width: 0; }
+.risk-guard-toggle b { display: block; color: #e8edf7; font-size: 9px; }
+.risk-guard-toggle small { display: block; margin-top: 3px; color: var(--muted); font-size: 7px; }
 .risk-total { padding: 20px 16px 12px; display: flex; align-items: flex-end; justify-content: space-between; }
 .risk-total span { color: var(--muted); font-size: 9px; }
 .risk-total strong { font-size: 25px; font-weight: 600; }

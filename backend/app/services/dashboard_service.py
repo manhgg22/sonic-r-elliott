@@ -62,8 +62,15 @@ class DashboardService:
         return {
             "risk_per_trade_pct": RISK_PCT_PER_TRADE,
             "max_portfolio_risk_pct": MAX_PORTFOLIO_RISK_PCT,
+            "risk_guard_enabled": (
+                self.repository.portfolio_risk_guard_enabled()
+            ),
             "committed_risk_pct": round(committed, 4),
             "pending_orders": pending,
             "open_positions": opened,
             "pending_expiry_bars": PENDING_EXPIRY_BARS,
         }
+
+    def set_portfolio_risk_guard(self, enabled: bool):
+        self.repository.set_portfolio_risk_guard(enabled)
+        return self.risk_summary()

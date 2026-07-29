@@ -136,7 +136,7 @@ export default function App() {
             {page === "terminal" && <TerminalPage data={data} market={market} selected={selected} setSelected={setSelected} />}
             {page === "scanner" && <ScannerPage data={data} selected={selected} setSelected={setSelected} refresh={load} />}
             {page === "signal" && <SignalPage data={data} market={market} selected={selected} setSelected={setSelected} />}
-            {page === "portfolio" && <PortfolioPage data={data} market={market} />}
+            {page === "portfolio" && <PortfolioPage data={data} market={market} refresh={load} />}
             {page === "history" && <HistoryPage data={data} />}
             {page === "api" && <ApiPage market={market} />}
           </Suspense>

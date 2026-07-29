@@ -26,6 +26,7 @@
 .primary.ant-btn { border-color: #49d8ed; color: #081018; background: #49d8ed; }
 .primary.ant-btn:hover { border-color: #7fe8f5 !important; color: #081018 !important; background: #7fe8f5 !important; }
 .risk-progress .ant-progress-inner, .risk-progress .ant-progress-bg { border-radius: 99px !important; }
+.risk-guard-toggle .ant-switch.ant-switch-checked { background: #43d99b; }
 .ant-message-notice-content { border: 1px solid #273049; color: #f2f5fb; background: #151b2d !important; }
 .ant-pagination { color: #7f8aa3; font-size: 9px; }
 .ant-pagination .ant-pagination-item,

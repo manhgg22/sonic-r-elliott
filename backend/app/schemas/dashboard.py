@@ -11,10 +11,15 @@ class HealthResponse(BaseModel):
 class RiskSummary(BaseModel):
     risk_per_trade_pct: float
     max_portfolio_risk_pct: float
+    risk_guard_enabled: bool
     committed_risk_pct: float
     pending_orders: int
     open_positions: int
     pending_expiry_bars: int
+
+
+class RiskGuardUpdate(BaseModel):
+    enabled: bool
 
 
 class SnapshotResponse(BaseModel):

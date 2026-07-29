@@ -64,6 +64,7 @@ export type TerminalSnapshot = {
 export type RiskSummary = {
   risk_per_trade_pct: number;
   max_portfolio_risk_pct: number;
+  risk_guard_enabled: boolean;
   committed_risk_pct: number;
   pending_orders: number;
   open_positions: number;

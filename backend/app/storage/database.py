@@ -9,6 +9,7 @@ from typing import Any, Iterable, Iterator, Sequence
 
 DEFAULT_SQLITE_PATH = Path("results/paper_trading.db")
 POSTGRES_SCHEMES = ("postgresql://", "postgres://")
+RISK_GUARD_SETTING_KEY = "portfolio_risk_guard_enabled"
 
 
 def resolve_database_target(
@@ -231,9 +232,21 @@ def initialize_schema(connection: DatabaseConnection) -> None:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS runtime_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
         INSERT INTO scan_lock (id, locked_at, holder)
         VALUES (1, NULL, NULL)
         ON CONFLICT (id) DO NOTHING
+        """,
+        """
+        INSERT INTO runtime_settings (key, value)
+        VALUES ('portfolio_risk_guard_enabled', 'true')
+        ON CONFLICT (key) DO NOTHING
         """,
         """
         CREATE INDEX IF NOT EXISTS idx_paper_trades_status_opened
@@ -247,6 +260,45 @@ def initialize_schema(connection: DatabaseConnection) -> None:
     with connection.transaction():
         for statement in statements:
             connection.execute(statement)
+
+
+def get_runtime_setting(
+    connection: DatabaseConnection,
+    key: str,
+    default: str | None = None,
+) -> str | None:
+    row = connection.execute(
+        "SELECT value FROM runtime_settings WHERE key=?",
+        (key,),
+    ).fetchone()
+    return default if row is None else str(row["value"])
+
+
+def set_runtime_setting(
+    connection: DatabaseConnection,
+    key: str,
+    value: str,
+) -> None:
+    with connection.transaction():
+        connection.execute(
+            """
+            INSERT INTO runtime_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (key, value),
+        )
+
+
+def portfolio_risk_guard_enabled(connection: DatabaseConnection) -> bool:
+    value = get_runtime_setting(
+        connection,
+        RISK_GUARD_SETTING_KEY,
+        "true",
+    )
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def apply_legacy_migrations(
