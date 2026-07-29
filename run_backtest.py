@@ -8,15 +8,19 @@ Dùng:
 """
 
 import argparse
+import hashlib
+import json
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import timedelta
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.stdout.reconfigure(encoding="utf-8")
 
 import pandas as pd
+import numpy as np
 
 from core.signals import Config, build_signals
 from core.mtf import (
@@ -26,6 +30,7 @@ from core.mtf import (
     verify_no_lookahead,
 )
 from core.pure_sonic import PureSonicConfig, build_pure_signals
+from core.classic import SonicClassicConfig, build_classic_signals
 from core import indicators as ind
 from backtest.engine import Costs, run_backtest
 from backtest.diagnostics import ablation_variants
@@ -38,6 +43,7 @@ from backtest.regime import (
 )
 from data.loader import (
     fetch_ohlcv,
+    okx_usdt_swap_universe,
     top_usdt_symbols,
     TOP10,
     data_quality_check,
@@ -392,7 +398,9 @@ def _load_entry_main(symbol, days, exchange_id):
     return entry, resample_ohlcv(entry, "1h")
 
 
-def _run_pure_universe(symbols, days, exchange_id, cfg, tp_modes):
+def _run_pure_universe(
+    symbols, days, exchange_id, cfg, tp_modes, costs=None
+):
     parts = {tp_mode: [] for tp_mode in tp_modes}
     for symbol in symbols:
         entry, main = _load_entry_main(symbol, days, exchange_id)
@@ -407,7 +415,7 @@ def _run_pure_universe(symbols, days, exchange_id, cfg, tp_modes):
                 entry,
                 symbol=symbol,
                 tp_mode=tp_mode,
-                costs=Costs(0, 0),
+                costs=costs or Costs(0, 0, 0),
                 max_bars=500,
                 trail_ema=trail,
             )
@@ -432,7 +440,7 @@ def _run_existing_binance(symbols, days, exchange_id, tp_mode):
             entry,
             symbol=symbol,
             tp_mode=tp_mode,
-            costs=Costs(0, 0),
+            costs=Costs(0, 0, 0),
             max_bars=cfg.max_bars,
             trail_ema=trail,
         )
@@ -509,12 +517,265 @@ def run_pure_sonic_report(symbols, days, exchange_id):
     )
 
 
+def _classic_diagnostics(signal_parts, trades):
+    candidates = sum(int(sig["risk_candidate"].sum()) for sig in signal_parts)
+    rejected_wide = sum(
+        int(sig["rejected_reason"].eq("SL_TOO_WIDE").sum())
+        for sig in signal_parts
+    )
+    rejected_tight = sum(
+        int(sig["rejected_reason"].eq("SL_TOO_TIGHT").sum())
+        for sig in signal_parts
+    )
+    sources = (
+        trades["tp_source"]
+        if not trades.empty and "tp_source" in trades
+        else pd.Series(dtype=object)
+    )
+    distribution = sources.value_counts(normalize=True)
+
+    funding_pct_r = 0.0
+    funding_net = 0.0
+    funding_debit = 0.0
+    funding_credit = 0.0
+    funding_periods = 0
+    weekend_n = 0
+    weekend_expectancy = None
+    if not trades.empty:
+        total_risk = trades["risk_amount"].sum()
+        funding_net = float(trades["funding_pnl"].sum())
+        funding_debit = float(-trades.loc[trades["funding_pnl"] < 0, "funding_pnl"].sum())
+        funding_credit = float(trades.loc[trades["funding_pnl"] > 0, "funding_pnl"].sum())
+        funding_periods = int(trades["funding_periods"].sum())
+        if total_risk:
+            funding_pct_r = 100 * funding_net / total_risk
+        timestamps = pd.to_datetime(trades["entry_time"], utc=True)
+        weekend = trades.loc[timestamps.dt.weekday >= 5]
+        weekend_n = len(weekend)
+        if weekend_n:
+            weekend_expectancy = float(weekend["r_multiple"].mean())
+    risk_groups = {}
+    if signal_parts:
+        all_signals = pd.concat(signal_parts, ignore_index=True)
+        ratio = all_signals["risk"] / all_signals["adr"]
+        for label, mask in {
+            "accepted": all_signals["entry_signal"],
+            "rejected": all_signals["rejected_reason"].ne(""),
+        }.items():
+            quantiles = ratio[mask & np.isfinite(ratio)].quantile(
+                [0.10, 0.50, 0.90, 0.95]
+            )
+            for q, name in [(0.10, "p10"), (0.50, "p50"), (0.90, "p90"), (0.95, "p95")]:
+                risk_groups[f"risk_adr_{label}_{name}"] = (
+                    round(float(quantiles.loc[q]), 4)
+                    if q in quantiles and pd.notna(quantiles.loc[q])
+                    else None
+                )
+    return {
+        "candidate_setups": candidates,
+        "pct_rejected_sl_too_wide": (
+            round(100 * rejected_wide / candidates, 2) if candidates else 0.0
+        ),
+        "pct_rejected_sl_too_tight": (
+            round(100 * rejected_tight / candidates, 2) if candidates else 0.0
+        ),
+        "tp_sr_level_pct": round(100 * distribution.get("sr_level", 0), 2),
+        "tp_rdh_pct": round(100 * distribution.get("rdh", 0), 2),
+        "tp_rdl_pct": round(100 * distribution.get("rdl", 0), 2),
+        "tp_fixed_r_pct": round(100 * distribution.get("fixed_r", 0), 2),
+        "tp_fallback_no_sr_pct": round(
+            100 * distribution.get("fallback_no_sr", 0), 2
+        ),
+        "tp_fallback_invalid_rdh_rdl_pct": round(
+            100 * distribution.get("fallback_invalid_rdh_rdl", 0), 2
+        ),
+        "funding_net": round(funding_net, 6),
+        "funding_debit": round(funding_debit, 6),
+        "funding_credit": round(funding_credit, 6),
+        "funding_periods": funding_periods,
+        "funding_pct_r": round(funding_pct_r, 4),
+        "weekend_trades": weekend_n,
+        "weekend_expectancy_r": (
+            round(weekend_expectancy, 4)
+            if weekend_expectancy is not None else None
+        ),
+        **risk_groups,
+    }
+
+
+def _run_classic_universe(symbols, days, exchange_id, cfg):
+    trade_parts = []
+    signal_parts = []
+    lookahead_violations = 0
+    for symbol in symbols:
+        entry, main = _load_entry_main(symbol, days, exchange_id)
+        daily = resample_ohlcv(entry, "1D")
+        h1_aligned = align_htf_to_ltf(main[["close"]], entry.index)
+        d1_aligned = align_htf_to_ltf(daily[["close"]], entry.index)
+        lookahead_violations += verify_no_lookahead(
+            main[["close"]], h1_aligned
+        )["violations"]
+        lookahead_violations += verify_no_lookahead(
+            daily[["close"]], d1_aligned
+        )["violations"]
+
+        for side in ("LONG", "SHORT"):
+            sig = build_classic_signals(entry, main, daily, cfg, side)
+            signal_parts.append(sig)
+            trades = run_backtest(
+                sig,
+                entry,
+                symbol=symbol,
+                tp_mode=cfg.tp_mode,
+                costs=Costs(),
+                max_bars=500,
+                pending_expiry_bars=cfg.pending_expiry_bars,
+            )
+            if not trades.empty:
+                trade_parts.append(trades)
+    if lookahead_violations:
+        raise RuntimeError(
+            f"Classic có {lookahead_violations} vi phạm look-ahead MTF"
+        )
+    combined = _combine_trades(trade_parts)
+    return combined, _classic_diagnostics(signal_parts, combined)
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_classic_manifest(path, symbols, days, exchange_id):
+    if path is None:
+        raise ValueError(
+            "--classic bắt buộc có --validation-manifest đã commit trước"
+        )
+    manifest_path = Path(path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    required = {
+        "venue", "market_type", "instruments", "start_utc", "end_utc",
+        "timeframe", "requested_days", "files", "funding_source",
+        "code_commit", "code_files", "config", "primary_tp_mode", "ablations",
+        "random_seed",
+    }
+    missing = required.difference(manifest)
+    if missing:
+        raise ValueError(f"Validation manifest thiếu field: {sorted(missing)}")
+    if manifest["venue"] != exchange_id:
+        raise ValueError("Venue CLI không khớp validation manifest")
+    if manifest["market_type"] != "linear_usdt_perpetual":
+        raise ValueError("Classic validation chỉ nhận linear USDT perpetual")
+    if manifest["timeframe"] != "15m" or manifest["requested_days"] != days:
+        raise ValueError("Timeframe/days CLI không khớp validation manifest")
+    if list(manifest["instruments"]) != list(symbols):
+        raise ValueError("Danh sách/order instrument không khớp validation manifest")
+    if manifest["primary_tp_mode"] != "sr_level":
+        raise ValueError("Primary TP phải được khóa là sr_level")
+    if manifest["config"] != asdict(SonicClassicConfig()):
+        raise ValueError("Config hiện tại không khớp config đã đăng ký")
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", manifest["code_commit"], commit],
+        capture_output=True,
+    )
+    if ancestry.returncode != 0:
+        raise ValueError("Code commit trong manifest không phải ancestor hiện tại")
+    for item in manifest["code_files"]:
+        code_path = Path(item["path"])
+        if not code_path.exists() or _file_sha256(code_path) != item["sha256"]:
+            raise ValueError(f"Code đã đổi sau khi đăng ký: {code_path}")
+    for item in manifest["files"]:
+        file_path = Path(item["path"])
+        if not file_path.exists():
+            raise ValueError(f"Thiếu data file trong manifest: {file_path}")
+        if file_path.stat().st_size != item["size"]:
+            raise ValueError(f"Size data đã đổi: {file_path}")
+        if _file_sha256(file_path) != item["sha256"]:
+            raise ValueError(f"SHA-256 data đã đổi: {file_path}")
+    return manifest
+
+
+def run_classic_report(symbols, days, exchange_id, manifest_path):
+    """Ba TP mode, bốn ablation đăng ký trước và đối chứng Pure Sonic."""
+    _validate_classic_manifest(
+        manifest_path, symbols, days, exchange_id
+    )
+    _cache_universe(symbols, days, exchange_id)
+    base = SonicClassicConfig()
+    tp_rows = []
+    main_trades = {}
+    main_diagnostics = {}
+    for mode in ("sr_level", "rdh_rdl", "fixed_r"):
+        cfg = replace(base, tp_mode=mode)
+        trades, diagnostics = _run_classic_universe(
+            symbols, days, exchange_id, cfg
+        )
+        main_trades[mode] = trades
+        main_diagnostics[mode] = diagnostics
+        tp_rows.append({
+            "tp_mode": mode,
+            **_pure_metrics(trades, days, len(symbols)),
+            **diagnostics,
+        })
+    tp_report = pd.DataFrame(tp_rows)
+
+    ablation_rows = []
+    for label, cfg in [
+        ("baseline", base),
+        ("require_leg1_cross", replace(base, require_leg1_cross=True)),
+        (
+            "no_sl_adr_gate",
+            replace(base, sl_max_adr=None),
+        ),
+        ("sonic_ny_session", replace(base, session_filter="sonic_ny")),
+        ("pivot_right_5", replace(base, pivot_right=5)),
+    ]:
+        trades, diagnostics = (
+            (main_trades["sr_level"], main_diagnostics["sr_level"])
+            if label == "baseline"
+            else _run_classic_universe(symbols, days, exchange_id, cfg)
+        )
+        ablation_rows.append({
+            "config": label,
+            **_pure_metrics(trades, days, len(symbols)),
+            **diagnostics,
+        })
+    ablation_report = pd.DataFrame(ablation_rows)
+
+    pure = _run_pure_universe(
+        symbols,
+        days,
+        exchange_id,
+        PureSonicConfig(),
+        ["sr_level"],
+        costs=Costs(),
+    )["sr_level"]
+    comparison = pd.DataFrame([
+        {"system": "pure_sonic", **_pure_metrics(pure, days, len(symbols))},
+        {
+            "system": "classic_sr_level",
+            **_pure_metrics(main_trades["sr_level"], days, len(symbols)),
+        },
+    ])
+    return tp_report, ablation_report, comparison
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=365)
     ap.add_argument("--symbols", nargs="+")
     ap.add_argument("--exchange", default="binance")
     ap.add_argument("--top", type=int, default=50)
+    ap.add_argument("--validation-manifest", type=Path)
     ap.add_argument("--tp", default="fixed_2r",
                     choices=["fixed_2r", "sr_level", "fib_extension"])
     reports = ap.add_mutually_exclusive_group()
@@ -524,7 +785,54 @@ def main():
     reports.add_argument("--pa-breakdown", action="store_true")
     reports.add_argument("--regime-report", action="store_true")
     reports.add_argument("--pure-sonic", action="store_true")
+    reports.add_argument("--classic", action="store_true")
     args = ap.parse_args()
+
+    if args.classic:
+        if args.symbols:
+            symbols = args.symbols
+        elif args.exchange == "okx":
+            symbols = [
+                row["symbol"] for row in okx_usdt_swap_universe()[:args.top]
+            ]
+        else:
+            symbols = top_usdt_symbols(args.exchange, args.top)
+        print(
+            f"SONIC CLASSIC — {args.exchange}, {len(symbols)} coin, "
+            f"{args.days} ngày, funding giả định 0.01%/8h"
+        )
+        tp_report, ablation, comparison = run_classic_report(
+            symbols, args.days, args.exchange, args.validation_manifest
+        )
+        print("\n3 TP MODES")
+        print(tp_report.to_string(index=False))
+        print("\n4 ABLATIONS ĐĂNG KÝ TRƯỚC")
+        print(ablation.to_string(index=False))
+        print("\nCLASSIC VS PURE SONIC")
+        print(comparison.to_string(index=False))
+        primary_edge = bool(
+            tp_report.loc[
+                tp_report["tp_mode"] == "sr_level", "stat_edge"
+            ].iloc[0]
+        )
+        verdict = (
+            "PRIMARY SR_LEVEL CÓ BẰNG CHỨNG EDGE"
+            if primary_edge
+            else "PRIMARY SR_LEVEL KHÔNG ĐẠT CỔNG EDGE"
+        )
+        print(f"\nKẾT LUẬN: {verdict}")
+        out = Path("results")
+        out.mkdir(exist_ok=True)
+        tp_report.to_csv(
+            out / f"classic_tp_{args.days}d.csv", index=False
+        )
+        ablation.to_csv(
+            out / f"classic_ablation_{args.days}d.csv", index=False
+        )
+        comparison.to_csv(
+            out / f"classic_vs_pure_{args.days}d.csv", index=False
+        )
+        return
 
     if args.pure_sonic:
         symbols = args.symbols or top_usdt_symbols(args.exchange, args.top)

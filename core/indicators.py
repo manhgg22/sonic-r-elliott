@@ -44,6 +44,22 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.ewm(alpha=1 / period, adjust=False).mean()
 
 
+def adr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Average Daily Range trên ``period`` nến, bỏ qua nến range bằng 0."""
+    if period < 1:
+        raise ValueError("ADR period phải >= 1")
+    required = {"high", "low"}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(f"ADR thiếu cột OHLC: {sorted(missing)}")
+
+    daily_range = (df["high"] - df["low"]).abs()
+    valid = daily_range[daily_range > 0]
+    valid_adr = valid.rolling(period, min_periods=period).mean()
+    # Zero-range rows do not consume one of the ``period`` valid sessions.
+    return valid_adr.reindex(df.index).ffill()
+
+
 def adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """
     ADX — bộ lọc sideway chính của hệ thống.
@@ -77,7 +93,12 @@ def slope(series: pd.Series, lookback: int = 10) -> pd.Series:
 
 # ---------------------------------------------------------------- PVSRA
 
-def pva_signals(df: pd.DataFrame, lookback: int = 10) -> pd.DataFrame:
+def pva_signals(
+    df: pd.DataFrame,
+    lookback: int = 10,
+    rising_mult: float = 1.5,
+    climax_mult: float = 2.0,
+) -> pd.DataFrame:
     """
     Phân loại volume theo định nghĩa PVA của TAH/qFish.
 
@@ -104,9 +125,12 @@ def pva_signals(df: pd.DataFrame, lookback: int = 10) -> pd.DataFrame:
 
     out = pd.DataFrame(index=df.index)
     out["volume_ratio"] = volume_ratio
-    out["rising"] = (volume_ratio >= 1.5).fillna(False)
+    if rising_mult <= 0 or climax_mult <= 0:
+        raise ValueError("PVA multiplier phải > 0")
+
+    out["rising"] = (volume_ratio >= rising_mult).fillna(False)
     out["climax"] = (
-        (volume_ratio >= 2.0) | (activity >= previous_peak)
+        (volume_ratio >= climax_mult) | (activity >= previous_peak)
     ).fillna(False)
     out["direction"] = np.where(
         df["close"] > df["open"],
@@ -126,7 +150,11 @@ def pva_signals(df: pd.DataFrame, lookback: int = 10) -> pd.DataFrame:
 # ---------------------------------------------------------------- ZigZag / Swing
 
 def zigzag_confirmed(
-    df: pd.DataFrame, left: int = 5, right: int = 5
+    df: pd.DataFrame,
+    left: int = 5,
+    right: int = 5,
+    *,
+    clean: bool = True,
 ) -> pd.DataFrame:
     """
     Tìm swing high/low bằng fractal, CÓ ĐỘ TRỄ ĐÚNG.
@@ -156,6 +184,8 @@ def zigzag_confirmed(
         return pd.DataFrame(columns=["idx", "price", "kind", "confirmed_at"])
 
     piv = pd.DataFrame(pivots, columns=["idx", "price", "kind", "confirmed_at"])
+    if not clean:
+        return piv
 
     # Lọc pivot liên tiếp cùng loại: giữ cái cực đoan hơn
     cleaned = []
@@ -171,6 +201,40 @@ def zigzag_confirmed(
             cleaned.append(row.to_dict())
 
     return pd.DataFrame(cleaned)
+
+
+# ---------------------------------------------------------------- Support / resistance
+
+def find_resistance(
+    highs: pd.Series,
+    current_idx: int,
+    entry: float,
+    lookback: int = 200,
+    min_distance_pct: float = 0.005,
+) -> float | None:
+    """Mức high lịch sử gần giá nhất, tối thiểu 0.5% phía trên entry."""
+    start = max(0, current_idx - lookback)
+    window = highs.iloc[start:current_idx]
+    above = window[window > entry * (1 + min_distance_pct)]
+    if above.empty:
+        return None
+    return float(above.min())
+
+
+def find_support(
+    lows: pd.Series,
+    current_idx: int,
+    entry: float,
+    lookback: int = 200,
+    min_distance_pct: float = 0.005,
+) -> float | None:
+    """Mức low lịch sử gần giá nhất, tối thiểu 0.5% phía dưới entry."""
+    start = max(0, current_idx - lookback)
+    window = lows.iloc[start:current_idx]
+    below = window[window < entry * (1 - min_distance_pct)]
+    if below.empty:
+        return None
+    return float(below.max())
 
 
 def dow_structure(pivots: pd.DataFrame, as_of_idx: int) -> str:

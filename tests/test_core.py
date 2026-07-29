@@ -563,7 +563,7 @@ def test_backtest_stop_entry_waits_for_next_bar_trigger():
         "pa_pinbar": [False] * 4,
         "pa_bos": [False] * 4,
     }, index=index)
-    trades = run_backtest(signal, market, costs=Costs(0, 0))
+    trades = run_backtest(signal, market, costs=Costs(0, 0, 0))
     assert len(trades) == 1
     trade = trades.iloc[0]
     assert trade["entry_time"] == index[2]
@@ -708,7 +708,7 @@ def test_m15_preset_regression():
     trades = run_backtest(
         sig,
         entry,
-        costs=Costs(0, 0),
+        costs=Costs(0, 0, 0),
         max_bars=cfg.max_bars,
         trail_ema=trail,
     )
@@ -826,7 +826,7 @@ def test_backtest_closes_at_end():
         },
         index=idx,
     )
-    trades = run_backtest(sig, m15, costs=Costs(0, 0))
+    trades = run_backtest(sig, m15, costs=Costs(0, 0, 0))
     assert len(trades) == 1 and trades.iloc[0]["exit_reason"] == "END_OF_DATA"
     assert np.isclose(trades.iloc[0]["r_multiple"], 1.0)
     assert frequency_check(trades, idx)["total_days"] == 2
@@ -853,7 +853,7 @@ def test_no_cost_backtest_keeps_tight_stops():
         },
         index=idx,
     )
-    assert len(run_backtest(sig, prices, costs=Costs(0, 0))) == 1
+    assert len(run_backtest(sig, prices, costs=Costs(0, 0, 0))) == 1
     assert run_backtest(sig, prices).empty
     print("  [OK] Backtest không phí không loại SL sát")
 
@@ -992,8 +992,8 @@ if __name__ == "__main__":
     test_mtf_verifier_allows_equal_closes()
     test_regimes_use_only_closed_history_and_entry_time()
     test_pure_sonic_no_lookahead()
-    test_pure_sonic_only_four_conditions()
-    test_deploy_setup_has_five_gates_and_closed_bars()
+    test_pure_sonic_keeps_four_entry_conditions_plus_regime_context()
+    test_deploy_setup_has_seven_gates_and_closed_bars()
     test_paper_trade_lifecycle_is_conservative()
 
     print("\n[3] Pipeline đầy đủ")
