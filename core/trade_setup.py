@@ -1,5 +1,7 @@
 """Setup BUY kỷ luật: Sonic R + breakout + Dow + Value Zone + PA."""
 
+import os
+
 import numpy as np
 import pandas as pd
 from zoneinfo import ZoneInfo
@@ -31,6 +33,31 @@ SHORT_FILTER_LABELS = {
 }
 
 NEW_YORK = ZoneInfo("America/New_York")
+
+SESSION_FILTER_ENV = "SONIC_SESSION_FILTER"
+SESSION_FILTER_CHOICES = ("none", "sonic_ny")
+
+
+def session_gate(session: pd.DataFrame) -> pd.Series:
+    """Quyết định phiên có được dùng để CHẶN lệnh hay không.
+
+    Sonic gốc cấm phiên Á và cuối tuần vì thị trường forex đóng cửa. Crypto
+    perpetual giao dịch liên tục nên lý do đó không còn, vì vậy mặc định là
+    ``none`` — không chặn. Đặt ``SONIC_SESSION_FILTER=sonic_ny`` để phục hồi
+    hai cửa sổ 01:00-04:00 và 07:00-11:00 giờ New York, dùng cho ablation.
+
+    Nhãn phiên trong ``session["session"]`` luôn được tính bất kể cổng bật hay
+    tắt, để còn phân tích được hiệu suất theo phiên về sau.
+    """
+    mode = os.getenv(SESSION_FILTER_ENV, "none").strip().lower()
+    if mode not in SESSION_FILTER_CHOICES:
+        raise ValueError(
+            f"{SESSION_FILTER_ENV} phải là một trong "
+            f"{SESSION_FILTER_CHOICES}, nhận được: {mode!r}"
+        )
+    if mode == "sonic_ny":
+        return session["f_session"]
+    return pd.Series(True, index=session.index)
 
 
 def sonic_session(index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -89,7 +116,7 @@ def build_trade_setup_signals(
     dow_aligned = align_htf_to_ltf(dow, entry_df.index)
     sig.insert(6, "f_dow", dow_aligned["dow"].eq("uptrend"))
     session = sonic_session(entry_df.index)
-    sig.insert(2, "f_session", session["f_session"])
+    sig.insert(2, "f_session", session_gate(session))
     sig["session"] = session["session"]
     sig["entry_signal"] &= sig["f_dow"] & sig["f_regime"] & sig["f_session"]
     sig.attrs["active_filters"] = list(FILTER_LABELS)
@@ -168,7 +195,7 @@ def build_short_trade_setup_signals(
     sig["low"] = l
     sig["f_trend"] = main_aligned["trend"].eq(True)
     sig["f_regime"] = main_aligned["regime"].eq(True)
-    sig["f_session"] = session["f_session"]
+    sig["f_session"] = session_gate(session)
     sig["f_breakout"] = main_aligned["breakout"].eq(True)
     sig["f_dow"] = main_aligned["dow"].eq("downtrend")
     sig["f_value_zone"] = (

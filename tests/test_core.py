@@ -14,6 +14,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from core import indicators as ind
 from core.mtf import (
@@ -29,6 +30,7 @@ from core.trade_setup import (
     build_trade_setup_signals,
     closed_bars,
     latest_trade_setup,
+    session_gate,
     sonic_session,
 )
 from paper_monitor import (
@@ -1067,3 +1069,44 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("TẤT CẢ TEST PASS")
     print("=" * 60)
+
+
+def test_session_gate_defaults_to_24_7_for_crypto(monkeypatch):
+    """Live scanner mặc định không chặn theo phiên forex.
+
+    Phiên Á/cuối tuần bị cấm trong Sonic gốc vì thị trường FX đóng cửa. Crypto
+    perpetual chạy 24/7 nên lý do đó không còn; mặc định phải là 'none'.
+    """
+    monkeypatch.delenv("SONIC_SESSION_FILTER", raising=False)
+    off_session = pd.DatetimeIndex([
+        "2026-01-05T10:00:00Z",  # 05:00 New York — ngoài cả hai cửa sổ
+        "2026-01-10T13:00:00Z",  # thứ Bảy
+    ])
+    gate = session_gate(sonic_session(off_session))
+    assert gate.tolist() == [True, True]
+
+
+def test_session_gate_can_restore_forex_windows(monkeypatch):
+    monkeypatch.setenv("SONIC_SESSION_FILTER", "sonic_ny")
+    index = pd.DatetimeIndex([
+        "2026-01-05T07:00:00Z",  # 02:00 New York — EUROPE
+        "2026-01-05T10:00:00Z",  # 05:00 New York — ngoài phiên
+        "2026-01-10T13:00:00Z",  # thứ Bảy
+    ])
+    gate = session_gate(sonic_session(index))
+    assert gate.tolist() == [True, False, False]
+
+
+def test_session_gate_rejects_unknown_value(monkeypatch):
+    monkeypatch.setenv("SONIC_SESSION_FILTER", "bật-hết")
+    with pytest.raises(ValueError, match="SONIC_SESSION_FILTER"):
+        session_gate(sonic_session(pd.DatetimeIndex(["2026-01-05T07:00:00Z"])))
+
+
+def test_session_label_still_recorded_when_gate_disabled(monkeypatch):
+    """Tắt cổng không được làm mất nhãn phiên — cần nó để phân tích sau."""
+    monkeypatch.setenv("SONIC_SESSION_FILTER", "none")
+    sessions = sonic_session(pd.DatetimeIndex([
+        "2026-01-05T07:00:00Z", "2026-01-05T10:00:00Z"
+    ]))
+    assert sessions["session"].tolist() == ["EUROPE", "OFF_SESSION"]
