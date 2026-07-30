@@ -6,6 +6,10 @@ run = ["python", "tools/replit_start.py"]
 requiredFiles = [".replit", "requirements.txt", "frontend/package.json"]
 
 [deployment]
+# Reserved VM = always-on. Bắt buộc phải là "vm": paper monitor cần chạy liên
+# tục để quét mỗi nến M15. Với "cloudrun" (Autoscale) deployment ngủ khi không
+# có traffic, monitor chỉ thức khi có người mở web nên bỏ hầu hết các nến.
+deploymentTarget = "vm"
 build = "pip install -r requirements.txt && npm ci --prefix frontend && npm run build --prefix frontend"
 run = ["python", "tools/replit_start.py"]
 
