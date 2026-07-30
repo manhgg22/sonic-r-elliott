@@ -10,3 +10,6 @@ frontend/*.tsbuildinfo
 tools/stitch/node_modules/
 tools/stitch/last-generation.json
 tools/stitch/output/
+
+# Artifact của Playwright MCP (snapshot, console log) — không theo dõi.
+.playwright-mcp/
