@@ -15,6 +15,7 @@ from backend.app.storage.database import (
     portfolio_risk_guard_enabled,
     resolve_database_target,
     scalar,
+    transient_errors,
 )
 from core.signal_scanner import scan_market
 from data.loader import okx_usdt_swap_universe
@@ -438,45 +439,101 @@ def open_ready_trades(conn, report):
     return opened
 
 
+def _release_lock_safely(db_target):
+    """Nhả scan lock bằng một connection riêng.
+
+    Lock là một dòng trong bảng ``scan_lock``, không phải session lock, nên
+    đóng connection không tự nhả nó. Nếu không nhả được thì nó tự hết hạn sau
+    ``SCAN_LOCK_STALE_SECONDS``, vì vậy lỗi ở đây chỉ log chứ không raise —
+    không được che mất lỗi thật của chu kỳ.
+    """
+    try:
+        conn = connect(db_target)
+    except Exception:
+        logging.exception("Không mở được connection để nhả scan lock.")
+        return
+    try:
+        release_scan_lock(conn)
+    except Exception:
+        logging.exception("Không nhả được scan lock; nó sẽ tự hết hạn.")
+    finally:
+        conn.close()
+
+
+def persist_cycle(db_target, report, scanned_at, duration, attempts=2):
+    """Ghi kết quả lượt quét, thử lại một lần nếu connection bị đóng.
+
+    ``manage_open_trades`` và ``open_ready_trades`` đều bọc trong đúng một
+    transaction và bỏ qua nến đã xử lý, nên chạy lại là an toàn.
+
+    Trả về ``(scan_saved, opened, open_count)``.
+    """
+    retryable = transient_errors()
+    for attempt in range(1, attempts + 1):
+        conn = connect(db_target)
+        try:
+            # save_scan chỉ ghi nhận quan sát (snapshot + scan_runs). Quản trị
+            # lệnh đang mở quan trọng hơn nhiều, nên lỗi ghi snapshot không được
+            # bỏ qua manage_open_trades/open_ready_trades của cả chu kỳ.
+            # transaction() đã rollback nên connection vẫn dùng được sau lỗi.
+            try:
+                save_scan(conn, report, scanned_at, duration)
+                scan_saved = True
+            except retryable:
+                raise
+            except Exception:
+                scan_saved = False
+                logging.exception(
+                    "Lưu snapshot lượt quét thất bại; vẫn tiếp tục quản trị lệnh."
+                )
+            manage_open_trades(conn, report)
+            opened = open_ready_trades(conn, report)
+            open_count = scalar(conn.execute(
+                "SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'"
+            ))
+            return scan_saved, opened, open_count
+        except retryable as exc:
+            if attempt == attempts:
+                raise
+            logging.warning(
+                "Kết nối DB bị đóng khi ghi kết quả (lần %d/%d): %s. "
+                "Thử lại với connection mới.", attempt, attempts, exc
+            )
+        finally:
+            conn.close()
+
+
 def run_cycle(db_target=None, progress=None):
     conn = connect(db_target)
-    if not acquire_scan_lock(conn):
-        open_count = scalar(conn.execute(
-            "SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'"
-        ))
-        conn.close()
-        logging.info("Bỏ qua lượt quét: đã có tiến trình khác đang quét.")
-        return {
-            "skipped": True, "coins": 0, "long_ready": 0, "short_ready": 0,
-            "errors": 0, "opened": 0, "open_positions": open_count,
-            "duration_seconds": 0.0, "scan_saved": False,
-        }
     try:
+        if not acquire_scan_lock(conn):
+            open_count = scalar(conn.execute(
+                "SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'"
+            ))
+            logging.info("Bỏ qua lượt quét: đã có tiến trình khác đang quét.")
+            return {
+                "skipped": True, "coins": 0, "long_ready": 0, "short_ready": 0,
+                "errors": 0, "opened": 0, "open_positions": open_count,
+                "duration_seconds": 0.0, "scan_saved": False,
+            }
+    finally:
+        conn.close()
+
+    try:
+        # KHÔNG giữ connection trong lúc quét. scan_market gọi mạng 5-6 phút;
+        # connection nằm idle suốt thời gian đó bị PostgreSQL của Replit/Neon
+        # đóng (AdminShutdown 57P01) và mọi lệnh ghi sau đều vỡ. Đo trên
+        # production 2026-07-29: 7 chu kỳ liên tiếp mất trắng vì đúng lỗi này.
         started = time.monotonic()
         universe = okx_usdt_swap_universe()
         report = dedupe_setups(scan_market(universe, progress=progress))
         duration = time.monotonic() - started
         scanned_at = pd.Timestamp.now(tz="UTC")
-        # save_scan chỉ ghi nhận quan sát (snapshot + scan_runs). Quản trị lệnh
-        # đang mở quan trọng hơn nhiều, nên một lỗi ghi snapshot không được phép
-        # bỏ qua manage_open_trades/open_ready_trades của cả chu kỳ.
-        # transaction() đã rollback nên connection vẫn dùng được sau lỗi.
-        try:
-            save_scan(conn, report, scanned_at, duration)
-            scan_saved = True
-        except Exception:
-            scan_saved = False
-            logging.exception(
-                "Lưu snapshot lượt quét thất bại; vẫn tiếp tục quản trị lệnh."
-            )
-        manage_open_trades(conn, report)
-        opened = open_ready_trades(conn, report)
-        open_count = scalar(conn.execute(
-            "SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'"
-        ))
+        scan_saved, opened, open_count = persist_cycle(
+            db_target, report, scanned_at, duration
+        )
     finally:
-        release_scan_lock(conn)
-        conn.close()
+        _release_lock_safely(db_target)
     ready = report[report["status"] == "READY"]
     summary = {
         "skipped": False,

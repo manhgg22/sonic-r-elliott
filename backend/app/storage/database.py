@@ -33,6 +33,25 @@ def is_postgres_target(target: str | Path) -> bool:
     )
 
 
+def transient_errors() -> tuple[type[BaseException], ...]:
+    """Lỗi kết nối tạm thời, đáng thử lại bằng một connection mới.
+
+    PostgreSQL của Replit/Neon có thể đóng connection đang mở khi platform
+    suspend hoặc restart; psycopg báo ``AdminShutdown`` (SQLSTATE 57P01), một
+    lớp con của ``OperationalError``. SQLite trên bind mount cũng trả
+    ``OperationalError`` khi I/O lỗi tạm thời.
+
+    Không phải mọi ``OperationalError`` đều tạm thời — ví dụ thiếu cột cũng
+    thuộc lớp này. Nhưng thử lại một lần rồi raise thì không che lỗi thật.
+    """
+    errors: tuple[type[BaseException], ...] = (sqlite3.OperationalError,)
+    try:
+        import psycopg
+    except ImportError:
+        return errors
+    return errors + (psycopg.OperationalError,)
+
+
 def _postgres_sql(sql: str) -> str:
     # Project queries use DB-API positional placeholders and do not contain
     # literal question marks. psycopg uses %s for the same parameter style.

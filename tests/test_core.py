@@ -5,6 +5,7 @@ Test quan trọng nhất: LOOK-AHEAD.
 Nếu test này fail, mọi kết quả backtest đều vô nghĩa.
 """
 
+import sqlite3
 import sys
 from itertools import combinations
 from pathlib import Path
@@ -1191,3 +1192,99 @@ def test_duplicate_symbol_side_does_not_crash_snapshot():
         ))
         assert len(rows) == 2, f"phải dedupe còn 2 dòng, nhận được {rows}"
         connection.close()
+
+
+def _tracking_connect(events):
+    """Bọc pm.connect để ghi lại thời điểm mở/đóng connection."""
+    real_connect = pm.connect
+
+    def wrapper(target=None):
+        events.append("connect")
+        conn = real_connect(target)
+        real_close = conn.close
+
+        def close():
+            events.append("close")
+            real_close()
+
+        conn.close = close
+        return conn
+
+    return wrapper
+
+
+def test_scan_must_not_hold_db_connection_open(monkeypatch):
+    """scan_market gọi mạng 5-6 phút; giữ connection idle suốt lúc đó khiến
+    Neon/Replit đóng nó (AdminShutdown) và mọi lệnh ghi sau đều vỡ.
+    """
+    events = []
+    monkeypatch.setattr(pm, "connect", _tracking_connect(events))
+    monkeypatch.setattr(pm, "okx_usdt_swap_universe",
+                        lambda: [{"symbol": "BTC/USDT:USDT"}])
+
+    def scan(universe, progress=None):
+        events.append("scan")
+        return _fake_scan_report()
+
+    monkeypatch.setattr(pm, "scan_market", scan)
+    monkeypatch.setattr(pm, "manage_open_trades", lambda *a, **k: None)
+    monkeypatch.setattr(pm, "open_ready_trades", lambda *a, **k: 0)
+
+    with TemporaryDirectory() as directory:
+        pm.run_cycle(Path(directory) / "paper.db")
+
+    before_scan = events[:events.index("scan")]
+    assert before_scan.count("connect") == before_scan.count("close"), (
+        f"còn connection đang mở khi bắt đầu quét: {events}"
+    )
+
+
+def test_db_phase_retries_after_connection_loss(monkeypatch):
+    """Connection bị platform đóng giữa chu kỳ phải được thử lại, không mất lượt.
+
+    manage_open_trades và open_ready_trades đều bọc trong một transaction duy
+    nhất và bỏ qua nến đã xử lý, nên chạy lại là an toàn.
+    """
+    attempts = {"manage": 0}
+    monkeypatch.setattr(pm, "okx_usdt_swap_universe",
+                        lambda: [{"symbol": "BTC/USDT:USDT"}])
+    monkeypatch.setattr(pm, "scan_market",
+                        lambda universe, progress=None: _fake_scan_report())
+
+    def flaky_manage(_conn, _report):
+        attempts["manage"] += 1
+        if attempts["manage"] == 1:
+            raise sqlite3.OperationalError(
+                "server closed the connection unexpectedly"
+            )
+
+    monkeypatch.setattr(pm, "manage_open_trades", flaky_manage)
+    monkeypatch.setattr(pm, "open_ready_trades", lambda *a, **k: 0)
+
+    with TemporaryDirectory() as directory:
+        summary = pm.run_cycle(Path(directory) / "paper.db")
+
+    assert attempts["manage"] == 2, "phải thử lại đúng một lần"
+    assert summary["skipped"] is False
+    assert summary["scan_saved"] is True
+
+
+def test_scan_lock_released_even_when_scan_raises(monkeypatch):
+    monkeypatch.setattr(pm, "okx_usdt_swap_universe",
+                        lambda: [{"symbol": "BTC/USDT:USDT"}])
+
+    def exploding_scan(universe, progress=None):
+        raise RuntimeError("OKX sập")
+
+    monkeypatch.setattr(pm, "scan_market", exploding_scan)
+
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "paper.db"
+        with pytest.raises(RuntimeError, match="OKX sập"):
+            pm.run_cycle(path)
+        connection = connect(path)
+        locked_at = list(connection.execute(
+            "SELECT locked_at FROM scan_lock WHERE id=1"
+        ))[0]["locked_at"]
+        connection.close()
+    assert locked_at is None, "lock phải được nhả dù lượt quét lỗi"
