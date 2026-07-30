@@ -126,7 +126,20 @@ def committed_risk_usd(trade) -> float:
     return committed_risk_pct(state) / risk_pct * risk_amount
 
 
+def dedupe_setups(report):
+    """Bỏ trùng cặp (symbol, side), giữ bản ghi cuối.
+
+    ``latest_setups`` có ``PRIMARY KEY (symbol, side)``. Nếu universe trả về
+    một symbol hai lần thì ``executemany`` vi phạm ràng buộc và làm vỡ cả lượt
+    quét. Một universe trùng là dữ liệu bẩn, không phải lý do để mất cả chu kỳ.
+    """
+    if report.empty or not {"symbol", "side"}.issubset(report.columns):
+        return report
+    return report.drop_duplicates(subset=["symbol", "side"], keep="last")
+
+
 def save_scan(conn, report, scanned_at, duration):
+    report = dedupe_setups(report)
     rows = [
         tuple(_value(row.get(column)) for column in SCAN_COLUMNS)
         for row in report.to_dict("records")
@@ -436,15 +449,26 @@ def run_cycle(db_target=None, progress=None):
         return {
             "skipped": True, "coins": 0, "long_ready": 0, "short_ready": 0,
             "errors": 0, "opened": 0, "open_positions": open_count,
-            "duration_seconds": 0.0,
+            "duration_seconds": 0.0, "scan_saved": False,
         }
     try:
         started = time.monotonic()
         universe = okx_usdt_swap_universe()
-        report = scan_market(universe, progress=progress)
+        report = dedupe_setups(scan_market(universe, progress=progress))
         duration = time.monotonic() - started
         scanned_at = pd.Timestamp.now(tz="UTC")
-        save_scan(conn, report, scanned_at, duration)
+        # save_scan chỉ ghi nhận quan sát (snapshot + scan_runs). Quản trị lệnh
+        # đang mở quan trọng hơn nhiều, nên một lỗi ghi snapshot không được phép
+        # bỏ qua manage_open_trades/open_ready_trades của cả chu kỳ.
+        # transaction() đã rollback nên connection vẫn dùng được sau lỗi.
+        try:
+            save_scan(conn, report, scanned_at, duration)
+            scan_saved = True
+        except Exception:
+            scan_saved = False
+            logging.exception(
+                "Lưu snapshot lượt quét thất bại; vẫn tiếp tục quản trị lệnh."
+            )
         manage_open_trades(conn, report)
         opened = open_ready_trades(conn, report)
         open_count = scalar(conn.execute(
@@ -463,6 +487,7 @@ def run_cycle(db_target=None, progress=None):
         "opened": opened,
         "open_positions": open_count,
         "duration_seconds": round(duration, 1),
+        "scan_saved": scan_saved,
     }
     logging.info("Chu kỳ hoàn tất: %s", summary)
     return summary

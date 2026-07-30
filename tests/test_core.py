@@ -33,6 +33,7 @@ from core.trade_setup import (
     session_gate,
     sonic_session,
 )
+import paper_monitor as pm
 from paper_monitor import (
     MAX_NEW_TRADES_PER_WEEK,
     MAX_PORTFOLIO_RISK_PCT,
@@ -1110,3 +1111,83 @@ def test_session_label_still_recorded_when_gate_disabled(monkeypatch):
         "2026-01-05T07:00:00Z", "2026-01-05T10:00:00Z"
     ]))
     assert sessions["session"].tolist() == ["EUROPE", "OFF_SESSION"]
+
+
+def _fake_scan_report():
+    return pd.DataFrame([
+        {"symbol": "BTC/USDT:USDT", "side": "LONG", "status": "NO_SETUP"},
+        {"symbol": "BTC/USDT:USDT", "side": "SHORT", "status": "NO_SETUP"},
+    ])
+
+
+def test_snapshot_failure_must_not_block_open_trade_management(monkeypatch):
+    """save_scan chỉ là ghi nhận quan sát; vỡ nó không được bỏ quản trị rủi ro.
+
+    Trước đây run_cycle dùng try/finally không có except, nên khi save_scan
+    raise thì manage_open_trades() và open_ready_trades() bị bỏ qua — vị thế
+    đang mở không được xử lý TP/SL suốt cả chu kỳ đó.
+    """
+    calls = []
+    monkeypatch.setattr(pm, "okx_usdt_swap_universe",
+                        lambda: [{"symbol": "BTC/USDT:USDT"}])
+    monkeypatch.setattr(pm, "scan_market",
+                        lambda universe, progress=None: _fake_scan_report())
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("UniqueViolation giả lập")
+
+    monkeypatch.setattr(pm, "save_scan", explode)
+    monkeypatch.setattr(pm, "manage_open_trades",
+                        lambda *a, **k: calls.append("manage"))
+    monkeypatch.setattr(pm, "open_ready_trades",
+                        lambda *a, **k: (calls.append("open"), 0)[1])
+
+    with TemporaryDirectory() as directory:
+        summary = pm.run_cycle(Path(directory) / "paper.db")
+
+    assert calls == ["manage", "open"], (
+        "manage_open_trades và open_ready_trades phải vẫn chạy"
+    )
+    assert summary["scan_saved"] is False
+    assert summary["skipped"] is False
+
+
+def test_successful_cycle_reports_scan_saved(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pm, "okx_usdt_swap_universe",
+                        lambda: [{"symbol": "BTC/USDT:USDT"}])
+    monkeypatch.setattr(pm, "scan_market",
+                        lambda universe, progress=None: _fake_scan_report())
+    monkeypatch.setattr(pm, "save_scan",
+                        lambda *a, **k: calls.append("save"))
+    monkeypatch.setattr(pm, "manage_open_trades",
+                        lambda *a, **k: calls.append("manage"))
+    monkeypatch.setattr(pm, "open_ready_trades",
+                        lambda *a, **k: (calls.append("open"), 0)[1])
+
+    with TemporaryDirectory() as directory:
+        summary = pm.run_cycle(Path(directory) / "paper.db")
+
+    assert calls == ["save", "manage", "open"]
+    assert summary["scan_saved"] is True
+
+
+def test_duplicate_symbol_side_does_not_crash_snapshot():
+    """Universe trùng (symbol, side) không được làm vỡ cả lượt quét.
+
+    latest_setups có PRIMARY KEY (symbol, side); executemany với batch chứa
+    cặp trùng sẽ vi phạm ràng buộc.
+    """
+    duplicated = pd.DataFrame([
+        {"symbol": "BTC/USDT:USDT", "side": "LONG", "status": "NO_SETUP"},
+        {"symbol": "BTC/USDT:USDT", "side": "LONG", "status": "NO_SETUP"},
+        {"symbol": "BTC/USDT:USDT", "side": "SHORT", "status": "NO_SETUP"},
+    ])
+    with TemporaryDirectory() as directory:
+        connection = connect(Path(directory) / "paper.db")
+        pm.save_scan(connection, duplicated, pd.Timestamp.now(tz="UTC"), 1.0)
+        rows = list(connection.execute(
+            "SELECT symbol, side FROM latest_setups ORDER BY side"
+        ))
+        assert len(rows) == 2, f"phải dedupe còn 2 dòng, nhận được {rows}"
+        connection.close()
